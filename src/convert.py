@@ -200,9 +200,10 @@ def split_pool(
             print(f"  Excluding {len(excluded_indices)} indices from {idx_file.name}")
         else:
             print(f"  WARNING: index file not found: {idx_file}")
-    frames = [f for i, f in enumerate(all_frames) if i not in excluded_indices]
+    # Keep original XYZ index alongside each frame
+    indexed_frames = [(i, f) for i, f in enumerate(all_frames) if i not in excluded_indices]
     if excluded_indices:
-        print(f"  {len(all_frames) - len(frames)} configs excluded (test/val); {len(frames)} remain.")
+        print(f"  {len(all_frames) - len(indexed_frames)} configs excluded (test/val); {len(indexed_frames)} remain.")
 
     always_include = set(always_include or [])
     always_include_contains = list(always_include_contains or [])
@@ -210,13 +211,13 @@ def split_pool(
     exclude = set(exclude or [])
     rng = random.Random(rng_seed)
 
-    # Group by config_type
-    by_type: dict[str, list] = defaultdict(list)
-    for atoms in frames:
-        by_type[_get_config_type(atoms)].append(atoms)
+    # Group by config_type, preserving original index
+    by_type: dict[str, list[tuple[int, object]]] = defaultdict(list)
+    for orig_idx, atoms in indexed_frames:
+        by_type[_get_config_type(atoms)].append((orig_idx, atoms))
 
-    seed_frames: list = []
-    pool_frames: list = []
+    seed_entries: list[tuple[int, object]] = []
+    pool_entries: list[tuple[int, object]] = []
 
     print(f"\n  {'config_type':<30} {'total':>6} {'→seed':>6} {'→pool':>6}")
     print("  " + "-" * 52)
@@ -235,18 +236,31 @@ def split_pool(
         else:
             cap = max_per_type if max_per_type is not None else len(group)
             n_seed = min(seed_per_type, cap, len(group))
-        seed_frames.extend(group[:n_seed])
-        pool_frames.extend(group[n_seed:])
+        seed_entries.extend(group[:n_seed])
+        pool_entries.extend(group[n_seed:])
         print(f"  {ctype:<30} {len(group):>6} {n_seed:>6} {len(group)-n_seed:>6}")
 
+    seed_frames = [atoms for _, atoms in seed_entries]
+    pool_frames = [atoms for _, atoms in pool_entries]
+
     print("  " + "-" * 52)
-    print(f"  {'TOTAL':<30} {len(frames):>6} {len(seed_frames):>6} {len(pool_frames):>6}")
+    print(f"  {'TOTAL':<30} {len(indexed_frames):>6} {len(seed_frames):>6} {len(pool_frames):>6}")
 
     write_cfg(seed_frames, outdir / "seed.cfg")
     write_cfg(pool_frames, outdir / "candidate_pool.cfg")
 
-    # train.cfg starts as a copy of seed.cfg; the AL loop appends to it
+    # Write seed selection log: original XYZ index, config_type
     import shutil
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    log_path = log_dir / "seed_selection.log"
+    with open(log_path, "w") as lf:
+        lf.write("index, feature_type\n")
+        for orig_idx, atoms in sorted(seed_entries, key=lambda x: x[0]):
+            lf.write(f"{orig_idx}, {_get_config_type(atoms)}\n")
+    print(f"  Seed selection log: {log_path}  ({len(seed_entries)} entries)")
+
+    # train.cfg starts as a copy of seed.cfg; the AL loop appends to it
     shutil.copy(outdir / "seed.cfg", outdir / "train.cfg")
     print(f"  Copied seed.cfg → train.cfg (AL loop will append to train.cfg)")
 
