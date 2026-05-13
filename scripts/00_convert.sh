@@ -6,7 +6,7 @@
 #   bash scripts/00_convert.sh split  [input.xyz]   # random 80/10/10 split (for held-out test)
 #
 # Pool mode produces:
-#   data/seed.cfg           — ~1 config per config_type (all dimers included), used as seed
+#   data/seed.cfg           — all bulk-type configs + 1 per other type; dimer excluded
 #   data/candidate_pool.cfg — remaining labeled configs for active learning
 #   data/train.cfg          — copy of seed.cfg (AL loop appends to this)
 #
@@ -27,7 +27,9 @@ echo "  Output: $OUTDIR/"
 
 if [[ "$MODE" == "pool" ]]; then
     python src/convert.py --input "$INPUT" --outdir "$OUTDIR" \
-        --mode pool --seed-per-type 1 --always-include dimer
+        --mode pool --seed-per-type 1 \
+        --always-include-contains bulk \
+        --exclude dimer
     echo ""
     echo "Done."
     echo "  Seed set      : $OUTDIR/seed.cfg"

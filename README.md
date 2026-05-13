@@ -10,8 +10,8 @@ The training dataset (451 configs, 134 config_types from a GAP study) is used as
 train_liquid.xyz
       │
       ▼  --mode pool
-00_convert.sh ──► seed.cfg (~1 per config_type, all dimers)
-              └──► candidate_pool.cfg (remaining ~300+ labeled configs)
+00_convert.sh ──► seed.cfg (all bulk-type configs + 1 per other type; dimers excluded)
+              └──► candidate_pool.cfg (remaining labeled configs)
       │
       ▼  train on seed.cfg
 01_train.sh          Train MTP-16 on seed set (initial potential)
@@ -62,7 +62,7 @@ bash scripts/00_convert.sh pool /path/to/train_liquid.xyz
 ```
 
 Produces:
-- `data/seed.cfg` — ~1 config per config_type, all dimers → minimal diverse starting set
+- `data/seed.cfg` — all bulk-type configs + 1 per other config_type (dimers excluded)
 - `data/candidate_pool.cfg` — remaining labeled configs for AL selection
 - `data/train.cfg` — copy of seed.cfg; the AL loop appends to this
 

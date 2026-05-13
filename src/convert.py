@@ -161,6 +161,8 @@ def split_pool(
     seed_per_type: int = 1,
     max_per_type: int | None = None,
     always_include: list[str] | None = None,
+    always_include_contains: list[str] | None = None,
+    exclude: list[str] | None = None,
     rng_seed: int = 42,
 ) -> None:
     """Stratified split: seed set (N per config_type) + candidate pool (remainder).
@@ -176,6 +178,8 @@ def split_pool(
     outdir.mkdir(parents=True, exist_ok=True)
 
     always_include = set(always_include or [])
+    always_include_contains = list(always_include_contains or [])
+    exclude = set(exclude or [])
     rng = random.Random(rng_seed)
 
     # Group by config_type
@@ -190,9 +194,12 @@ def split_pool(
     print("  " + "-" * 52)
 
     for ctype, group in sorted(by_type.items()):
+        if ctype in exclude:
+            print(f"  {ctype:<30} {len(group):>6}  EXCLUDED")
+            continue
         rng.shuffle(group)
-        if ctype in always_include:
-            # All configs of this type go to seed
+        in_always = ctype in always_include or any(s in ctype for s in always_include_contains)
+        if in_always:
             n_seed = len(group)
         else:
             cap = max_per_type if max_per_type is not None else len(group)
@@ -252,9 +259,23 @@ def main() -> None:
     parser.add_argument(
         "--always-include",
         nargs="+",
-        default=["dimer"],
+        default=[],
         metavar="TYPE",
-        help="config_types where ALL configs go to seed (default: dimer)",
+        help="config_types (exact match) where ALL configs go to seed (default: none)",
+    )
+    parser.add_argument(
+        "--always-include-contains",
+        nargs="+",
+        default=[],
+        metavar="STR",
+        help="All config_types whose name contains any of these substrings go entirely to seed",
+    )
+    parser.add_argument(
+        "--exclude",
+        nargs="+",
+        default=[],
+        metavar="TYPE",
+        help="config_types to completely skip (not in seed, not in pool)",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
@@ -268,6 +289,8 @@ def main() -> None:
             seed_per_type=args.seed_per_type,
             max_per_type=args.max_per_type,
             always_include=args.always_include,
+            always_include_contains=args.always_include_contains,
+            exclude=args.exclude,
             rng_seed=args.seed,
         )
     elif args.mode == "no-split":
