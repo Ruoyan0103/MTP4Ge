@@ -1,0 +1,13 @@
+name: mtp4ge
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - numpy
+  - matplotlib
+  - jupyter
+  - pip:
+      - ase>=3.22
+      - pyyaml>=6.0

@@ -1,0 +1,11 @@
+# Active Learning Configuration
+
+# Extrapolation grade threshold: configurations with grade > threshold are selected
+grade_threshold: 2.0
+
+# Maximum number of active learning iterations
+max_iterations: 10
+
+# Path to unlabelled candidate structures (in MLIP-3 CFG format) to be graded
+# Generate these from LAMMPS MD runs or structure generation workflows
+preselected_cfg: data/preselected.cfg

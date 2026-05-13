@@ -1,0 +1,20 @@
+# MTP Training Configuration
+# All paths are relative to the repository root.
+
+mlp_binary: /scratch/project_2012355/Paper_3/mlip-3-prune/bin/mlp
+
+mtp_template: mtp_templates/16.almtp
+train_cfg: data/train.cfg
+output_potential: results/potentials/pot.almtp
+
+# Training hyperparameters
+iteration_limit: 500
+al_mode: nbh          # neighbourhood-based weighting; use 'body' for body-order
+
+# Loss weights (relative importance of energy / force / stress errors)
+energy_weight: 1.0
+force_weight: 0.01
+stress_weight: 0.001
+
+# Random seed for weight initialization (null = random)
+seed: null

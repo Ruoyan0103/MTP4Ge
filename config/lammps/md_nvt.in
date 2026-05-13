@@ -1,0 +1,55 @@
+# LAMMPS NVT molecular dynamics template for liquid Ge
+# Placeholders filled at runtime by src/md_test.py:
+#   ${T_RUN}      → temperature in Kelvin
+#   ${RUN_STEPS}  → total number of MD steps
+#
+# TODO (MD details TBD): adjust box size, atom count, and thermostat parameters
+# to match desired simulation conditions.
+
+#===================== Simulation Parameters =======================
+variable T          equal ${T_RUN}
+variable run_steps  equal ${RUN_STEPS}
+variable SEED       equal 12345
+
+#===================== System Setup ================================
+units       metal
+boundary    p p p
+atom_style  atomic
+
+# TODO: replace with actual Ge liquid structure or lattice
+# Option 1: read from a pre-equilibrated LAMMPS data file
+# read_data   data/Ge_liquid.lammps
+
+# Option 2: create from FCC lattice and melt (simple starting point)
+variable lat_param equal 5.658   # Ge diamond cubic lattice constant (Å)
+lattice     diamond ${lat_param}
+region      box block 0 4 0 4 0 4 units lattice
+create_box  1 box
+create_atoms 1 box
+mass        1 72.630              # Ge atomic mass (amu)
+
+#===================== Potential ===================================
+pair_style  mlip mlip.ini
+pair_coeff  * *
+
+neighbor    2.0 bin
+neigh_modify delay 0 every 1 check yes
+
+#===================== Initial Velocity ============================
+velocity    all create ${T} ${SEED} mom yes rot yes
+
+#===================== Thermodynamics ==============================
+thermo_style custom step time temp press vol etotal
+thermo      1000
+
+#===================== NVT Run =====================================
+fix         1 all nvt temp ${T} ${T} 0.1
+timestep    0.001
+
+dump        1 all custom 1000 dump.lammpstrj id type x y z vx vy vz
+dump_modify 1 sort id
+
+run         ${run_steps}
+unfix       1
+
+write_data  results/md/end_structure.lammps
