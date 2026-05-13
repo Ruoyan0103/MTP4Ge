@@ -74,8 +74,10 @@ def write_cfg(frames: list, path: Path) -> None:
             except Exception:
                 forces = np.zeros_like(positions)
 
-            energy = atoms.info.get("energy") or atoms.get_potential_energy()
+            calc_results = atoms.calc.results if atoms.calc else {}
+            energy = calc_results.get("free_energy") or calc_results.get("energy")
             virial = _parse_virial_from_atoms(atoms)
+            config_type = _get_config_type(atoms)
 
             # Build type index for each symbol
             types = []
@@ -111,17 +113,15 @@ def write_cfg(frames: list, path: Path) -> None:
                     + "  ".join(f"{v:12.5f}" for v in virial)
                     + "\n"
                 )
+            f.write(f" Feature   type\t {config_type}\n")
             f.write("END_CFG\n\n")
 
     print(f"  Wrote {len(frames)} configs → {path}")
 
 
 def _has_energy(atoms) -> bool:
-    try:
-        atoms.get_potential_energy()
-        return True
-    except Exception:
-        return False
+    calc_results = atoms.calc.results if atoms.calc else {}
+    return bool(calc_results.get("free_energy") or calc_results.get("energy"))
 
 
 def convert(
