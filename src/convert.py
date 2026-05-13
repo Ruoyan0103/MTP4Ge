@@ -74,7 +74,7 @@ def write_cfg(frames: list, path: Path) -> None:
             except Exception:
                 forces = np.zeros_like(positions)
 
-            energy = atoms.get_potential_energy()
+            energy = atoms.info.get("energy") or atoms.get_potential_energy()
             virial = _parse_virial_from_atoms(atoms)
 
             # Build type index for each symbol
@@ -116,6 +116,14 @@ def write_cfg(frames: list, path: Path) -> None:
     print(f"  Wrote {len(frames)} configs → {path}")
 
 
+def _has_energy(atoms) -> bool:
+    try:
+        atoms.get_potential_energy()
+        return True
+    except Exception:
+        return False
+
+
 def convert(
     input_xyz: Path,
     outdir: Path,
@@ -123,7 +131,11 @@ def convert(
     seed: int = 42,
 ) -> None:
     print(f"Reading {input_xyz} ...")
-    frames = ase_read(str(input_xyz), index=":")
+    all_frames = ase_read(str(input_xyz), index=":")
+    frames = [f for f in all_frames if _has_energy(f)]
+    skipped = len(all_frames) - len(frames)
+    if skipped:
+        print(f"  WARNING: skipped {skipped} configs with no energy label.")
     print(f"  Loaded {len(frames)} configurations.")
 
     outdir.mkdir(parents=True, exist_ok=True)
