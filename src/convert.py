@@ -176,6 +176,7 @@ def split_pool(
     always_include_contains: list[str] | None = None,
     always_include_contains_except: list[str] | None = None,
     exclude: list[str] | None = None,
+    exclude_index_files: list[Path] | None = None,
     rng_seed: int = 42,
 ) -> None:
     """Stratified split: seed set (N per config_type) + candidate pool (remainder).
@@ -186,9 +187,22 @@ def split_pool(
         data/train.cfg          — symlink / copy of seed.cfg (used by training scripts)
     """
     print(f"Reading {input_xyz} ...")
-    frames = ase_read(str(input_xyz), index=":")
-    print(f"  Loaded {len(frames)} configurations.")
+    all_frames = ase_read(str(input_xyz), index=":")
+    print(f"  Loaded {len(all_frames)} configurations.")
     outdir.mkdir(parents=True, exist_ok=True)
+
+    # Build set of indices to exclude (test/val sets must not enter pool or seed)
+    excluded_indices: set[int] = set()
+    for idx_file in (exclude_index_files or []):
+        idx_file = Path(idx_file)
+        if idx_file.exists():
+            excluded_indices.update(int(l) for l in idx_file.read_text().splitlines() if l.strip())
+            print(f"  Excluding {len(excluded_indices)} indices from {idx_file.name}")
+        else:
+            print(f"  WARNING: index file not found: {idx_file}")
+    frames = [f for i, f in enumerate(all_frames) if i not in excluded_indices]
+    if excluded_indices:
+        print(f"  {len(all_frames) - len(frames)} configs excluded (test/val); {len(frames)} remain.")
 
     always_include = set(always_include or [])
     always_include_contains = list(always_include_contains or [])
@@ -301,6 +315,13 @@ def main() -> None:
         metavar="TYPE",
         help="config_types to completely skip (not in seed, not in pool)",
     )
+    parser.add_argument(
+        "--exclude-indices",
+        nargs="+",
+        default=[],
+        metavar="FILE",
+        help="Index files (one index per line) whose configs are excluded from seed and pool",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
@@ -316,6 +337,7 @@ def main() -> None:
             always_include_contains=args.always_include_contains,
             always_include_contains_except=args.always_include_contains_except,
             exclude=args.exclude,
+            exclude_index_files=[Path(f) for f in args.exclude_indices],
             rng_seed=args.seed,
         )
     elif args.mode == "no-split":

@@ -30,7 +30,8 @@ if [[ "$MODE" == "pool" ]]; then
         --mode pool --seed-per-type 1 \
         --always-include-contains bulk \
         --always-include-contains-except distorted_bulk \
-        --exclude dimer
+        --exclude dimer \
+        --exclude-indices "$OUTDIR/test_indices.txt" "$OUTDIR/val_indices.txt"
     echo ""
     echo "Done."
     echo "  Seed set      : $OUTDIR/seed.cfg"
