@@ -4,23 +4,31 @@ A complete pipeline for constructing, testing, actively learning, and pruning a 
 
 ## Pipeline Overview
 
+The training dataset (451 configs, 134 config_types from a GAP study) is used as a **labeled candidate pool**. Active learning selects only the configurations that are actually informative for MTP — typically a fraction of the full dataset.
+
 ```
 train_liquid.xyz
       │
-      ▼
-00_convert.sh        XYZ → MLIP-3 CFG (train / val / test split)
+      ▼  --mode pool
+00_convert.sh ──► seed.cfg (~1 per config_type, all dimers)
+              └──► candidate_pool.cfg (remaining ~300+ labeled configs)
       │
-      ▼
-01_train.sh          Train MTP-16 potential
+      ▼  train on seed.cfg
+01_train.sh          Train MTP-16 on seed set (initial potential)
       │
-      ├──► 02_test_errors.sh    Static error evaluation (RMSE)
+      ▼  automated AL loop (no DFT pause — pool is already labeled)
+03_active_learning.sh
+      select_add ──► merge into train.cfg ──► retrain
+      repeat until pool is exhausted or no extrapolative configs remain
+      │
+      ├──► 02_test_errors.sh    Static error evaluation (RMSE on test.cfg)
       │
       ├──► MD simulation        LAMMPS NVT (see config/lammps/)
       │
-      ├──► 03_active_learning.sh  Grade → select → relabel → retrain loop
-      │
       └──► 04_prune.sh          NSGA-II pruning → Pareto front → pruned potential
 ```
+
+> **Note:** Run `00_convert.sh split` separately on the full dataset *before* starting the AL loop to carve out a held-out `test.cfg` for unbiased evaluation.
 
 ## Environment
 
@@ -38,15 +46,27 @@ conda activate mtp4ge
 
 ## Quick Start
 
-### 1. Convert training data
+### 0. Carve out a held-out test set (do this first, once)
 
 ```bash
-bash scripts/00_convert.sh /path/to/train_liquid.xyz data/ "0.8 0.1 0.1"
+bash scripts/00_convert.sh split /path/to/train_liquid.xyz
 ```
 
-Produces `data/train.cfg`, `data/val.cfg`, `data/test.cfg`.
+Produces `data/train.cfg`, `data/val.cfg`, `data/test.cfg` (80/10/10 random split).
+Keep `data/test.cfg` untouched for final evaluation.
 
-### 2. Train potential
+### 1. Build seed + candidate pool
+
+```bash
+bash scripts/00_convert.sh pool /path/to/train_liquid.xyz
+```
+
+Produces:
+- `data/seed.cfg` — ~1 config per config_type, all dimers → minimal diverse starting set
+- `data/candidate_pool.cfg` — remaining labeled configs for AL selection
+- `data/train.cfg` — copy of seed.cfg; the AL loop appends to this
+
+### 2. Train on seed set
 
 ```bash
 bash scripts/01_train.sh
@@ -54,23 +74,27 @@ bash scripts/01_train.sh
 
 Output: `results/potentials/pot.almtp`
 
-### 3. Evaluate errors
-
-```bash
-bash scripts/02_test_errors.sh results/potentials/pot.almtp errors
-```
-
-Reports energy (meV/atom), force (eV/Å), and stress (GPa) RMSE for each split.
-
-### 4. Active learning
-
-Generate candidate structures (e.g. from a short MD run), write them to `data/preselected.cfg`, then:
+### 3. Run automated active learning loop
 
 ```bash
 bash scripts/03_active_learning.sh results/potentials/pot.almtp
 ```
 
-Each iteration pauses to let you add DFT labels before retraining.
+The loop runs fully automatically: each iteration calls `mlp select_add` on `candidate_pool.cfg`, merges the selected (already-labeled) configs into `train.cfg`, retrains, and repeats. Stops when the pool is exhausted or no extrapolative configs remain.
+
+To force interactive mode (for new, unlabeled candidates requiring DFT):
+
+```bash
+bash scripts/03_active_learning.sh results/potentials/pot.almtp --no-auto
+```
+
+### 4. Evaluate errors
+
+```bash
+bash scripts/02_test_errors.sh results/potentials/pot.almtp
+```
+
+Reports energy (meV/atom), force (eV/Å), and stress (GPa) RMSE on train/val/test.
 
 ### 5. MD testing
 

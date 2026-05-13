@@ -1,15 +1,23 @@
 """
 Convert extended XYZ training data to MLIP-3 CFG format.
 
+Modes:
+    --mode split   Train/val/test random split (default, use for held-out test set)
+    --mode no-split  Write everything as a single train.cfg
+    --mode pool    Stratified split: one rep per config_type → seed.cfg,
+                   remainder → candidate_pool.cfg (for AL from existing data)
+
 Usage:
-    python src/convert.py --input <file.xyz> --outdir data/ --split 0.8 0.1 0.1
-    python src/convert.py --input <file.xyz> --outdir data/ --no-split
+    python src/convert.py --input <file.xyz> --outdir data/ --mode split
+    python src/convert.py --input <file.xyz> --outdir data/ --mode pool
+    python src/convert.py --input <file.xyz> --outdir data/ --mode pool \\
+        --seed-per-type 1 --max-per-type 5 --always-include dimer
 """
 
 import argparse
 import random
-import re
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +27,10 @@ try:
 except ImportError:
     print("ERROR: ASE not found. Install with: pip install ase", file=sys.stderr)
     sys.exit(1)
+
+
+def _get_config_type(atoms) -> str:
+    return atoms.info.get("config_type", atoms.info.get("Config_type", "unknown"))
 
 
 # Map element symbol → integer type index (extend for multi-species systems)
@@ -143,32 +155,136 @@ def convert(
         (outdir / f"{name}_indices.txt").write_text("\n".join(map(str, indices)) + "\n")
 
 
+def split_pool(
+    input_xyz: Path,
+    outdir: Path,
+    seed_per_type: int = 1,
+    max_per_type: int | None = None,
+    always_include: list[str] | None = None,
+    rng_seed: int = 42,
+) -> None:
+    """Stratified split: seed set (N per config_type) + candidate pool (remainder).
+
+    Outputs:
+        data/seed.cfg           — minimal diverse starting set for MTP training
+        data/candidate_pool.cfg — remaining labeled configs for AL selection
+        data/train.cfg          — symlink / copy of seed.cfg (used by training scripts)
+    """
+    print(f"Reading {input_xyz} ...")
+    frames = ase_read(str(input_xyz), index=":")
+    print(f"  Loaded {len(frames)} configurations.")
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    always_include = set(always_include or [])
+    rng = random.Random(rng_seed)
+
+    # Group by config_type
+    by_type: dict[str, list] = defaultdict(list)
+    for atoms in frames:
+        by_type[_get_config_type(atoms)].append(atoms)
+
+    seed_frames: list = []
+    pool_frames: list = []
+
+    print(f"\n  {'config_type':<30} {'total':>6} {'→seed':>6} {'→pool':>6}")
+    print("  " + "-" * 52)
+
+    for ctype, group in sorted(by_type.items()):
+        rng.shuffle(group)
+        if ctype in always_include:
+            # All configs of this type go to seed
+            n_seed = len(group)
+        else:
+            cap = max_per_type if max_per_type is not None else len(group)
+            n_seed = min(seed_per_type, cap, len(group))
+        seed_frames.extend(group[:n_seed])
+        pool_frames.extend(group[n_seed:])
+        print(f"  {ctype:<30} {len(group):>6} {n_seed:>6} {len(group)-n_seed:>6}")
+
+    print("  " + "-" * 52)
+    print(f"  {'TOTAL':<30} {len(frames):>6} {len(seed_frames):>6} {len(pool_frames):>6}")
+
+    write_cfg(seed_frames, outdir / "seed.cfg")
+    write_cfg(pool_frames, outdir / "candidate_pool.cfg")
+
+    # train.cfg starts as a copy of seed.cfg; the AL loop appends to it
+    import shutil
+    shutil.copy(outdir / "seed.cfg", outdir / "train.cfg")
+    print(f"  Copied seed.cfg → train.cfg (AL loop will append to train.cfg)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert extended XYZ to MLIP-3 CFG")
     parser.add_argument("--input", required=True, help="Input .xyz file")
     parser.add_argument("--outdir", default="data/", help="Output directory")
+    parser.add_argument(
+        "--mode",
+        choices=["split", "no-split", "pool"],
+        default="split",
+        help=(
+            "split: random train/val/test split; "
+            "no-split: single train.cfg; "
+            "pool: stratified seed + candidate_pool for AL (default: split)"
+        ),
+    )
+    # split-mode options
     parser.add_argument(
         "--split",
         nargs=3,
         type=float,
         default=[0.8, 0.1, 0.1],
         metavar=("TRAIN", "VAL", "TEST"),
-        help="Train/val/test split ratios (default: 0.8 0.1 0.1)",
+        help="Train/val/test split ratios for --mode split (default: 0.8 0.1 0.1)",
     )
-    parser.add_argument("--no-split", action="store_true", help="Write single train.cfg without splitting")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for shuffling")
+    # pool-mode options
+    parser.add_argument(
+        "--seed-per-type",
+        type=int,
+        default=1,
+        help="Configs per config_type to put in seed set (default: 1)",
+    )
+    parser.add_argument(
+        "--max-per-type",
+        type=int,
+        default=None,
+        help="Cap seed selection at N per type even when seed-per-type is higher",
+    )
+    parser.add_argument(
+        "--always-include",
+        nargs="+",
+        default=["dimer"],
+        metavar="TYPE",
+        help="config_types where ALL configs go to seed (default: dimer)",
+    )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
 
-    split = None if args.no_split else tuple(args.split)
-    if split is not None and abs(sum(split) - 1.0) > 1e-6:
-        parser.error(f"Split ratios must sum to 1.0, got {sum(split):.4f}")
+    outdir = Path(args.outdir)
 
-    convert(
-        input_xyz=Path(args.input),
-        outdir=Path(args.outdir),
-        split=split,
-        seed=args.seed,
-    )
+    if args.mode == "pool":
+        split_pool(
+            input_xyz=Path(args.input),
+            outdir=outdir,
+            seed_per_type=args.seed_per_type,
+            max_per_type=args.max_per_type,
+            always_include=args.always_include,
+            rng_seed=args.seed,
+        )
+    elif args.mode == "no-split":
+        frames = ase_read(str(args.input), index=":")
+        print(f"  Loaded {len(frames)} configurations.")
+        outdir.mkdir(parents=True, exist_ok=True)
+        write_cfg(frames, outdir / "train.cfg")
+    else:  # split
+        ratios = tuple(args.split)
+        if abs(sum(ratios) - 1.0) > 1e-6:
+            parser.error(f"Split ratios must sum to 1.0, got {sum(ratios):.4f}")
+        convert(
+            input_xyz=Path(args.input),
+            outdir=outdir,
+            split=ratios,
+            seed=args.seed,
+        )
 
 
 if __name__ == "__main__":

@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-# Run active learning loop to iteratively refine the potential.
-# Requires a preselected.cfg of candidate structures in data/.
+# Run active learning loop.
+#
+# Auto mode (default): candidate pool is already DFT-labeled.
+#   select_add → merge → retrain, no human pause.
+#   Requires: data/candidate_pool.cfg  (from scripts/00_convert.sh pool)
+#
+# Interactive mode (--no-auto): pauses each iteration for DFT labeling.
+#
+# Usage:
+#   bash scripts/03_active_learning.sh [pot.almtp] [--no-auto] [--max-iter N]
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 POT="${1:-results/potentials/pot.almtp}"
-MAX_ITER="${2:-}"
+shift || true   # remaining args passed through to python
 
 echo "=== Active Learning ==="
 echo "  Potential: $POT"
-echo "  Preselected candidates: data/preselected.cfg"
+echo "  Pool     : data/candidate_pool.cfg"
 
-ARGS="--pot $POT"
-[[ -n "$MAX_ITER" ]] && ARGS="$ARGS --max-iter $MAX_ITER"
-
-python src/active_learning.py $ARGS
-
-echo "Done. Updated potential: $POT"
+python src/active_learning.py --pot "$POT" "$@"
