@@ -29,6 +29,7 @@ if [[ "$MODE" == "pool" ]]; then
     python src/convert.py --input "$INPUT" --outdir "$OUTDIR" \
         --mode pool --seed-per-type 1 \
         --always-include-contains bulk \
+        --always-include-contains-except distorted_bulk \
         --exclude dimer
     echo ""
     echo "Done."

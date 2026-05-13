@@ -162,6 +162,7 @@ def split_pool(
     max_per_type: int | None = None,
     always_include: list[str] | None = None,
     always_include_contains: list[str] | None = None,
+    always_include_contains_except: list[str] | None = None,
     exclude: list[str] | None = None,
     rng_seed: int = 42,
 ) -> None:
@@ -179,6 +180,7 @@ def split_pool(
 
     always_include = set(always_include or [])
     always_include_contains = list(always_include_contains or [])
+    always_include_contains_except = set(always_include_contains_except or [])
     exclude = set(exclude or [])
     rng = random.Random(rng_seed)
 
@@ -198,7 +200,10 @@ def split_pool(
             print(f"  {ctype:<30} {len(group):>6}  EXCLUDED")
             continue
         rng.shuffle(group)
-        in_always = ctype in always_include or any(s in ctype for s in always_include_contains)
+        in_always = (
+            ctype in always_include
+            or (any(s in ctype for s in always_include_contains) and ctype not in always_include_contains_except)
+        )
         if in_always:
             n_seed = len(group)
         else:
@@ -271,6 +276,13 @@ def main() -> None:
         help="All config_types whose name contains any of these substrings go entirely to seed",
     )
     parser.add_argument(
+        "--always-include-contains-except",
+        nargs="+",
+        default=[],
+        metavar="TYPE",
+        help="Exact config_types to exclude from --always-include-contains (fall back to seed-per-type)",
+    )
+    parser.add_argument(
         "--exclude",
         nargs="+",
         default=[],
@@ -290,6 +302,7 @@ def main() -> None:
             max_per_type=args.max_per_type,
             always_include=args.always_include,
             always_include_contains=args.always_include_contains,
+            always_include_contains_except=args.always_include_contains_except,
             exclude=args.exclude,
             rng_seed=args.seed,
         )

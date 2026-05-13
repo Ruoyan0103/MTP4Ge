@@ -18,5 +18,7 @@ seed_per_type: 1              # configs per config_type to put in seed set
 always_include_types: []      # exact config_type names: all their configs go to seed
 always_include_contains:      # substring match: all types whose name contains these go to seed
   - bulk
+always_include_contains_except:  # override: these exact types fall back to seed_per_type
+  - distorted_bulk
 exclude_types:                # completely skip these types (not in seed, not in pool)
   - dimer
