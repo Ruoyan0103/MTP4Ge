@@ -1,0 +1,5 @@
+slurmstepd: error:  mpi/pmix_v3: _errhandler: c1101 [0]: pmixp_client_v2.c:212: Error handler invoked: status = -25, source = [slurm.pmix.6681031.0:4]
+slurmstepd: error: *** STEP 6681031.0 ON c1101 CANCELLED AT 2026-05-20T21:12:28 ***
+srun: Job step aborted: Waiting up to 62 seconds for job step to finish.
+srun: error: c1101: tasks 0-31: Exited with exit code 7
+srun: Terminating StepId=6681031.0

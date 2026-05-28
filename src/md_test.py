@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 
-LAMMPS_BINARY = "lmp"  # override with --lammps if different
+LAMMPS_BINARY = "lmp_mpi"
 
 
 def write_mlip_ini(pot_path: str, run_dir: Path) -> Path:

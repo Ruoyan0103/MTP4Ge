@@ -1,0 +1,2 @@
+srun: error: c1101: tasks 0-31: Exited with exit code 1
+srun: Terminating StepId=6680965.0

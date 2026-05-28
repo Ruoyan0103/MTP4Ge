@@ -4,31 +4,15 @@ A complete pipeline for constructing, testing, actively learning, and pruning a 
 
 ## Pipeline Overview
 
-The training dataset (451 configs, 134 config_types from a GAP study) is used as a **labeled candidate pool**. Active learning selects only the configurations that are actually informative for MTP — typically a fraction of the full dataset.
-
 ```
-train_liquid.xyz
+data/train_diamond.xyz
       │
-      ▼  --mode pool
-00_convert.sh ──► seed.cfg (all bulk-type configs + 1 per other type; dimers excluded)
-              └──► candidate_pool.cfg (remaining labeled configs)
+      ▼  00_convert.sh
+data/train.cfg (converted MLIP-3 CFG)
       │
-      ▼  train on seed.cfg
-01_train.sh          Train MTP-16 on seed set (initial potential)
-      │
-      ▼  automated AL loop (no DFT pause — pool is already labeled)
-03_active_learning.sh
-      select_add ──► merge into train.cfg ──► retrain
-      repeat until pool is exhausted or no extrapolative configs remain
-      │
-      ├──► 02_test_errors.sh    Static error evaluation (RMSE on test.cfg)
-      │
-      ├──► MD simulation        LAMMPS NVT (see config/lammps/)
-      │
-      └──► 04_prune.sh          NSGA-II pruning → Pareto front → pruned potential
+      ▼  01_train.sh
+results/potentials/pot.almtp (trained MTP-16 potential)
 ```
-
-> **Note:** Run `00_convert.sh split` separately on the full dataset *before* starting the AL loop to carve out a held-out `test.cfg` for unbiased evaluation.
 
 ## Environment
 
@@ -46,27 +30,23 @@ conda activate mtp4ge
 
 ## Quick Start
 
-### 0. Carve out a held-out test set (do this first, once)
+### Step 1 — Convert data and build seed + candidate pool
+
+The input file `data/train_diamond.xyz` is already in the repository. Convert it to MLIP-3 CFG format and partition it into a seed set and a candidate pool:
 
 ```bash
-bash scripts/00_convert.sh split /path/to/train_liquid.xyz
-```
-
-Produces `data/train.cfg`, `data/val.cfg`, `data/test.cfg` (80/10/10 random split).
-Keep `data/test.cfg` untouched for final evaluation.
-
-### 1. Build seed + candidate pool
-
-```bash
-bash scripts/00_convert.sh pool /path/to/train_liquid.xyz
+bash scripts/00_convert.sh data/train_diamond.xyz
 ```
 
 Produces:
-- `data/seed.cfg` — all bulk-type configs + 1 per other config_type (dimers excluded)
+- `data/seed.cfg` — all `distorted_bulk` configs (one kept as seed); dimers excluded
 - `data/candidate_pool.cfg` — remaining labeled configs for AL selection
-- `data/train.cfg` — copy of seed.cfg; the AL loop appends to this
+- `data/train.cfg` — copy of `seed.cfg`; the AL loop appends to this
+- `logs/seed_selection.log` — index and config_type of the chosen seed config
 
-### 2. Train on seed set
+### Step 2 — Train the initial potential
+
+Trains MTP-16 (template: `mtp_templates/16.almtp`) on the seed set:
 
 ```bash
 bash scripts/01_train.sh
@@ -74,55 +54,18 @@ bash scripts/01_train.sh
 
 Output: `results/potentials/pot.almtp`
 
-### 3. Run automated active learning loop
+Training hyperparameters (iteration limit, loss weights, MTP level) are configured in `config/training.yaml`.
 
-```bash
-bash scripts/03_active_learning.sh results/potentials/pot.almtp
-```
-
-The loop runs fully automatically: each iteration calls `mlp select_add` on `candidate_pool.cfg`, merges the selected (already-labeled) configs into `train.cfg`, retrains, and repeats. Stops when the pool is exhausted or no extrapolative configs remain.
-
-To force interactive mode (for new, unlabeled candidates requiring DFT):
-
-```bash
-bash scripts/03_active_learning.sh results/potentials/pot.almtp --no-auto
-```
-
-### 4. Evaluate errors
-
-```bash
-bash scripts/02_test_errors.sh results/potentials/pot.almtp
-```
-
-Reports energy (meV/atom), force (eV/Å), and stress (GPa) RMSE on train/val/test.
-
-### 5. MD testing
-
-```bash
-python src/md_test.py --pot results/potentials/pot.almtp --T 1200 --steps 50000
-```
-
-### 6. Prune
-
-```bash
-bash scripts/04_prune.sh results/potentials/pot.almtp 0
-```
-
-`0` selects row 0 of the Pareto front (highest accuracy). Inspect `results/pruning/pareto/` to choose a different point. Output: `results/potentials/pruned.almtp`.
 
 ## Configuration
 
 | File | Purpose |
 |---|---|
-| `config/training.yaml` | MTP level, weights, iteration limit |
-| `config/active_learning.yaml` | Grade threshold, max iterations |
-| `config/pruning.json` | NSGA-II parameters (auto-filled by prune.py) |
-| `config/lammps/md_nvt.in` | LAMMPS NVT input template |
-| `config/lammps/mlip.ini` | MLIP-LAMMPS interface config |
+| `config/training.yaml` | MTP level, loss weights, iteration limit |
 
 ## MTP Templates
 
-Pre-built MTP architectures (levels 6–28) are in `mtp_templates/`. The default pipeline uses **MTP-16**. Edit `config/training.yaml` to switch levels.
+Pre-built MTP architectures are in `mtp_templates/`. The default pipeline uses **MTP-16** (`mtp_templates/16.almtp`). Edit `config/training.yaml` to switch levels.
 
 ## References
 

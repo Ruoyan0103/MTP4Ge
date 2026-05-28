@@ -29,7 +29,7 @@ create_atoms 1 box
 mass        1 72.630              # Ge atomic mass (amu)
 
 #===================== Potential ===================================
-pair_style  mlip mlip.ini
+pair_style  mlip param_file=mlip.ini
 pair_coeff  * *
 
 neighbor    2.0 bin
@@ -52,4 +52,4 @@ dump_modify 1 sort id
 run         ${run_steps}
 unfix       1
 
-write_data  results/md/end_structure.lammps
+write_data  end_structure.lammps

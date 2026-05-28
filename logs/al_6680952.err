@@ -1,0 +1,35 @@
+/scratch/project_2012355/Paper_3/mlip-3-prune/bin/mlp: error while loading shared libraries: libopenblas.so.0: cannot open shared object file: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+slurmstepd: error: execve(): lmp_mpi: No such file or directory
+srun: error: c1101: tasks 0-31: Exited with exit code 2
+srun: Terminating StepId=6680952.0

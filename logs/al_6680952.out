@@ -1,0 +1,31 @@
+=== Active Learning Job ===
+  Job ID    : 6680952
+  Nodes     : 1  Tasks: 1
+  Potential : results/potentials/pot.almtp
+Wed May 20 21:03:03 EEST 2026
+=== Active Learning ===
+  Potential     : results/potentials/pot.almtp
+  Training set  : data/train.cfg  (47 configs)
+  Temperature   : 300 K  |  MD steps: 10000
+  Grade threshold: 2.0  |  Max iterations: 20
+
+Step A — initializing active set (calculate_grade on training set)...
+  Calc grade: /scratch/project_2012355/Paper_3/mlip-3-prune/bin/mlp calculate_grade results/potentials/pot.almtp data/train.cfg results/active_learning/init_grade.cfg
+  Warning: calculate_grade exited 127
+
+============================================================
+Active Learning Iteration 1/20
+============================================================
+
+Step B — LAMMPS MD with active learning selection...
+  LAMMPS: srun -n 32 lmp_mpi -in md.in (cwd=results/active_learning/iter_001)
+  Warning: LAMMPS exited 2
+
+Active learning converged: no extrapolative structures found.
+
+Active learning complete.
+  Final training set: 47 configs
+  Val set           : 0 configs
+  Test set          : 0 configs
+=== Done ===
+Wed May 20 21:03:07 EEST 2026
