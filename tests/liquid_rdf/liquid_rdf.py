@@ -4,6 +4,9 @@ Run `nvm use --delete-prefix v24.15.0 --silent` to unset it.
 Your user’s .npmrc file (${HOME}/.npmrc)
 has a `globalconfig` and/or a `prefix` setting, which are incompatible with nvm.
 Run `nvm use --delete-prefix v24.15.0 --silent` to unset it.
+Your user’s .npmrc file (${HOME}/.npmrc)
+has a `globalconfig` and/or a `prefix` setting, which are incompatible with nvm.
+Run `nvm use --delete-prefix v24.15.0 --silent` to unset it.
 """Liquid Ge radial distribution function via LAMMPS NVT MD.
 
 Simple single-stage protocol:
@@ -210,11 +213,13 @@ def run(
     if np.any(mask_first):
         i_peak = int(np.argmax(g_r[mask_first]))
         r_peak = r[mask_first][i_peak]
+        g_peak = g_r[mask_first][i_peak]
     else:
         i_peak = int(np.argmax(g_r))
         r_peak = r[i_peak]
+        g_peak = g_r[i_peak]
 
-    print(f"  1st peak at r = {r_peak:.3f} Å,  g(r_peak) = {g_r[mask_first][i_peak]:.2f}")
+    print(f"  1st peak at r = {r_peak:.3f} Å,  g(r_peak) = {g_peak:.2f}")
     print(f"  Coordination number (r < 3.5 Å): {cn:.2f}  [expected: 6–9]")
     print(f"  Simulation density: {density_gcm3:.3f} g/cm³")
 
