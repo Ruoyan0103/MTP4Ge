@@ -1,3 +1,9 @@
+Your user’s .npmrc file (${HOME}/.npmrc)
+has a `globalconfig` and/or a `prefix` setting, which are incompatible with nvm.
+Run `nvm use --delete-prefix v24.15.0 --silent` to unset it.
+Your user’s .npmrc file (${HOME}/.npmrc)
+has a `globalconfig` and/or a `prefix` setting, which are incompatible with nvm.
+Run `nvm use --delete-prefix v24.15.0 --silent` to unset it.
 """Liquid Ge radial distribution function via LAMMPS NVT MD.
 
 Simple single-stage protocol:
@@ -208,19 +214,25 @@ def run(
         i_peak = int(np.argmax(g_r))
         r_peak = r[i_peak]
 
-    print(f"  1st peak at r = {r_peak:.3f} Å,  g(r_peak) = {g_r[i_peak]:.2f}")
+    print(f"  1st peak at r = {r_peak:.3f} Å,  g(r_peak) = {g_r[mask_first][i_peak]:.2f}")
     print(f"  Coordination number (r < 3.5 Å): {cn:.2f}  [expected: 6–9]")
     print(f"  Simulation density: {density_gcm3:.3f} g/cm³")
 
     # ── Save RDF data ──
     txt = outdir / "liquid_rdf.txt"
-    with open(txt, "w") as f:
-        f.write(f"# Liquid Ge RDF at {T:.0f} K  |  pot: {pot}\n")
-        f.write(f"# density = {density_gcm3:.3f} g/cm³\n")
-        f.write(f"# 1st peak at r = {r_peak:.3f} Å   CN = {cn:.2f}\n")
-        f.write("# r[A]  g(r)\n")
+    tmp_txt = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, dir="/tmp")
+    try:
+        tmp_txt.write(f"# Liquid Ge RDF at {T:.0f} K  |  pot: {pot}\n")
+        tmp_txt.write(f"# density = {density_gcm3:.3f} g/cm³\n")
+        tmp_txt.write(f"# 1st peak at r = {r_peak:.3f} Å   CN = {cn:.2f}\n")
+        tmp_txt.write("# r[A]  g(r)\n")
         for ri, gi in zip(r, g_r):
-            f.write(f"  {ri:.4f}  {gi:.6f}\n")
+            tmp_txt.write(f"  {ri:.4f}  {gi:.6f}\n")
+        tmp_txt.close()
+        shutil.move(tmp_txt.name, txt)
+    finally:
+        if not tmp_txt.closed:
+            tmp_txt.close()
     print(f"  Data written to {txt}")
 
     # ── Plot ──
@@ -252,7 +264,10 @@ def run(
         ax.set_xlim(0, rmax)
         fig.tight_layout()
         png = outdir / "liquid_rdf.png"
-        fig.savefig(png, dpi=150)
+        tmp_png = tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir="/tmp")
+        tmp_png.close()
+        fig.savefig(tmp_png.name, dpi=150)
+        shutil.move(tmp_png.name, png)
         plt.close(fig)
         print(f"  Plot saved to {png}")
     except ImportError as e:
