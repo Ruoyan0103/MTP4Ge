@@ -30,7 +30,7 @@ def test_write_liquid_input_basic():
         n_atoms = write_liquid_input(
             workdir, pot_path,
             nx=2, ny=2, nz=2, a0=5.658,
-            T=1500.0, steps=5000,
+            T=1500.0, steps_npt=20000, steps_nvt=5000,
         )
 
         # 8 atoms per diamond conventional cell × 2×2×2 = 64
@@ -45,11 +45,15 @@ def test_write_liquid_input_basic():
         assert "pair_style  mlip" in content
         assert "load_from=/fake/path/pot.almtp" in content
         assert "lattice     diamond 5.658" in content
-        assert "fix         nvt all nvt temp 1500.0 1500.0 0.1" in content
+        # Stage 1: NPT equilibration with barostat at 1 bar
+        assert "fix         npt_eq all npt temp 1500.0 1500.0 0.1 iso 1.0 1.0 1.0" in content
+        assert "run         20000" in content  # NPT steps
+        # Stage 2: NVT production with dump
+        assert "fix         nvt_prod all nvt temp 1500.0 1500.0 0.1" in content
         assert "dump        dmp all custom" in content
         assert "id type x y z" in content
+        assert "run         5000" in content  # NVT steps
         assert f"mass        1 {_GE_MASS_AMU}" in content
-        assert "run         5000" in content
 
 
 def test_write_liquid_input_supercell_dimensions():
@@ -78,7 +82,25 @@ def test_write_liquid_input_custom_a0_and_temperature():
         )
         content = (workdir / "in.liquid").read_text()
         assert "lattice     diamond 5.5" in content
+        # Both NPT and NVT should use the custom temperature
         assert "temp 2000.0 2000.0 0.1" in content
+
+
+def test_write_liquid_input_defaults():
+    """Verify default step counts and protocol are correct."""
+    with tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        write_liquid_input(
+            workdir, "/fake/pot.almtp",
+        )
+        content = (workdir / "in.liquid").read_text()
+        # Default NPT steps = 20000, NVT steps = 10000
+        assert "run         20000" in content
+        assert "run         10000" in content
+        # NPT fix with barostat (1 bar)
+        assert "iso 1.0 1.0 1.0" in content
+        # NVT fix (production)
+        assert "fix         nvt_prod all nvt" in content
 
 
 def test_compute_rdf_from_dump_with_synthetic_data():
