@@ -110,6 +110,23 @@ def build_neb_endpoints(a0: float, hop_shell: int, repeat: tuple = (3, 3, 3)):
 # NEB runner
 # ---------------------------------------------------------------------------
 
+def _relax_endpoint(atoms, mlp: str, pot: str, fmax: float = 0.02, max_steps: int = 300):
+    """Relax a vacancy supercell to its local minimum before NEB.
+
+    Uses a tighter fmax than the NEB convergence criterion so the endpoint
+    sits at a genuine local minimum; ASE NEB freezes endpoints during band
+    optimisation, so pre-relaxation is required for accurate barriers.
+    """
+    from ase.optimize import BFGS
+    atoms = atoms.copy()
+    atoms.calc = MTPCalculator(mlp=mlp, pot=pot)
+    opt = BFGS(atoms, trajectory=None)
+    converged = opt.run(fmax=fmax, steps=max_steps)
+    if not converged:
+        print(f"    Warning: endpoint relaxation did not converge in {max_steps} steps")
+    return atoms
+
+
 def run_neb(
     initial,
     final,
@@ -117,14 +134,23 @@ def run_neb(
     pot: str,
     n_images: int = 7,
     fmax: float = 0.05,
+    fmax_relax: float = 0.02,
     max_steps: int = 200,
 ) -> tuple[float, np.ndarray, np.ndarray]:
     """Run climbing-image NEB; return (barrier [eV], distances, energies).
 
+    Relaxes both endpoints to their local minima before building the band
+    (ASE NEB freezes endpoints during optimisation, so pre-relaxation is
+    required for accurate barrier heights).
+
     Creates a fresh MTPCalculator for each image to avoid shared-state issues.
     """
-    from ase.neb import NEB
+    from ase.mep.neb import NEB
     from ase.optimize import BFGS
+
+    print(f"  Relaxing endpoints (fmax={fmax_relax} eV/Å) ...")
+    initial = _relax_endpoint(initial, mlp, pot, fmax=fmax_relax)
+    final   = _relax_endpoint(final,   mlp, pot, fmax=fmax_relax)
 
     images = [initial.copy()]
     for i in range(n_images):
@@ -171,7 +197,7 @@ def _find_moving_atom(initial, final) -> int:
 # ---------------------------------------------------------------------------
 
 def run(pot: str, outdir: Path, mlp: str, a0: float,
-        n_images: int, fmax: float, max_steps: int) -> None:
+        n_images: int, fmax: float, fmax_relax: float, max_steps: int) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
 
     neb_results = {}
@@ -191,7 +217,8 @@ def run(pot: str, outdir: Path, mlp: str, a0: float,
 
         barrier, arc, energies = run_neb(
             initial, final, mlp, pot,
-            n_images=n_images, fmax=fmax, max_steps=max_steps
+            n_images=n_images, fmax=fmax, fmax_relax=fmax_relax,
+            max_steps=max_steps,
         )
         neb_results[label] = (arc, energies, barrier)
 
@@ -267,6 +294,8 @@ def main() -> None:
                         help="Number of NEB intermediate images (default: 7)")
     parser.add_argument("--fmax", type=float, default=0.05,
                         help="Force convergence threshold eV/Å (default: 0.05)")
+    parser.add_argument("--fmax-relax", type=float, default=0.02,
+                        help="Force threshold for endpoint pre-relaxation eV/Å (default: 0.02)")
     parser.add_argument("--max-steps", type=int, default=200,
                         help="Max BFGS steps (default: 200)")
     parser.add_argument("--outdir", default="results/tests/vacancy_migration")
@@ -280,6 +309,7 @@ def main() -> None:
         a0=args.a0,
         n_images=args.n_images,
         fmax=args.fmax,
+        fmax_relax=args.fmax_relax,
         max_steps=args.max_steps,
     )
 

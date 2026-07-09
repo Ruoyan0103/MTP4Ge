@@ -1,0 +1,47 @@
+# LAMMPS NVT molecular dynamics template for liquid Ge
+# Placeholders filled at runtime by src/md_test.py and src/active_learning.py:
+#   ${T_RUN}      → temperature in Kelvin
+#   ${POT_PATH}   → absolute path to pot.almtp
+#   ${GRADE_THRESHOLD} → γ_select
+#   ${GRADE_BREAK}     → γ_break (set equal to γ_select for selecting one config per trajectory)
+
+#===================== Simulation Parameters =======================
+variable T          equal ${T_RUN}
+variable run_steps  equal 20000
+variable SEED       equal 12345
+
+#===================== System Setup ================================
+units       metal
+boundary    p p p
+atom_style  atomic
+
+# Set lammps_structure in config/active_learning.yaml to activate this.
+${READ_DATA_LINE} 
+
+mass        1 72.630 
+#===================== Potential ===================================
+pair_style  mlip load_from=${POT_PATH} extrapolation_control=true &
+            threshold_save=${GRADE_THRESHOLD} &
+            threshold_break=${GRADE_BREAK} &
+            save_extrapolative_to=preselected.cfg
+pair_coeff  * *
+
+neighbor    2.0 bin
+neigh_modify delay 0 every 1 check yes
+
+#===================== Initial Velocity ============================
+velocity    all create ${T} ${SEED} mom yes rot yes
+
+#===================== Thermodynamics ==============================
+thermo_style custom step time temp press vol etotal
+thermo      100
+
+#===================== NVT Run =====================================
+fix         1 all nvt temp ${T} ${T} 0.1
+timestep    0.001
+
+dump        1 all custom 100 dump.lammpstrj id type x y z vx vy vz
+dump_modify 1 sort id
+
+run         ${run_steps}
+unfix       1

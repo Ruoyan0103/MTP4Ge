@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -30,10 +31,11 @@ def _mlp_binary(config_path: str) -> str:
 
 def run_check_errors(mlp: str, pot: str, cfg_path: str, outdir: Path) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
-    report = outdir / "errors.txt"
-    cmd = [
-        mlp, "check_errors", pot, cfg_path,
-        "--log=stdout",
+    report  = outdir / "errors.txt"
+    log_file = outdir / "error.log"
+    cmd = shlex.split(mlp) + [
+        "check_errors", pot, cfg_path,
+        f"--log={log_file}",
         f"--report_to={report}",
     ]
     print("Running:", " ".join(cmd))
@@ -45,14 +47,22 @@ def run_check_errors(mlp: str, pot: str, cfg_path: str, outdir: Path) -> None:
     _print_summary(report)
 
 
+_UNIT_MAP = {
+    "Energy:": "Energy (eV):",
+    "Energy per atom:": "Energy per atom (eV/atom):",
+    "Forces:": "Forces (eV/Å):",
+    "Stresses (in energy units):": "Stresses (eV):",
+    "Virial stresses (in pressure units):": "Virial stresses (GPa):",
+}
+
+
 def _print_summary(report: Path) -> None:
     if not report.exists():
         return
-    text = report.read_text()
     print("\n--- Error Summary ---")
-    for line in text.splitlines():
-        if any(kw in line.lower() for kw in ("rmse", "mae", "energy", "force", "stress")):
-            print(" ", line.strip())
+    for line in report.read_text().splitlines():
+        stripped = line.strip()
+        print(_UNIT_MAP.get(stripped, line))
     print("---------------------")
 
 

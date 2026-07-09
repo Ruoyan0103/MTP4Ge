@@ -23,9 +23,32 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from utils import _mlp_env, calc_efs, write_bare_cfg
+from utils import calc_efs
 
 MLP_DEFAULT = "/scratch/project_2012355/Paper_3/mlip-3-prune/bin/mlp"
+
+REF_DFT_DIR = Path(__file__).parent / "reference"
+DFT_REF_MAP = {
+    "[100]": REF_DFT_DIR / "qsd_dft_100.dat",
+    "[110]": REF_DFT_DIR / "qsd_dft_110.dat",
+    "[111]": REF_DFT_DIR / "qsd_dft_111.dat",
+    "[031]": REF_DFT_DIR / "qsd_dft_031.dat",
+}
+
+
+def load_ref_dft(path: Path):
+    if not path.exists():
+        return None, None, None, None, None
+    data = np.loadtxt(path, delimiter=",")
+    return data[:, 0], data[:, 1], data[:, 2], data[:, 3], data[:, 4]
+
+
+def _dft_max_disp(label: str):
+    path = DFT_REF_MAP.get(label)
+    if path is None or not path.exists():
+        return None
+    data = np.loadtxt(path, delimiter=",")
+    return float(data[-1, 0])
 
 # Drag directions: label → fractional Miller index (will be normalised)
 DRAG_DIRECTIONS = {
@@ -88,101 +111,110 @@ def _parse_all_efs(path: Path) -> list[tuple[float, np.ndarray]]:
 # Drag scan
 # ---------------------------------------------------------------------------
 
-def _max_safe_disp(pos: np.ndarray, cell: np.ndarray, drag_idx: int,
-                   uvec: np.ndarray, min_sep: float = 1.5) -> float:
-    """Return the max displacement before any inter-atom distance drops below min_sep.
+_TYPE_TO_SYMBOL = {0: "Ge"}  # mirrors SPECIES_MAP in src/convert.py
 
-    Uses straight-line drag geometry: dist²(d) = perp² + (proj - d)²
-    Collision when dist(d) = min_sep → d = proj - sqrt(min_sep² - perp²).
-    Only fires if the drag path passes within min_sep of another atom (perp < min_sep)
-    and the atom is ahead (proj > 0).
+
+def _write_cfg(configs: list, disp_vals: np.ndarray, path: Path) -> None:
+    """Write each drag-step structure to a batch CFG with Feature disp tag (mlp input)."""
+    with open(path, "w") as f:
+        for d, (cell, positions, types) in zip(disp_vals, configs):
+            n = len(positions)
+            f.write("BEGIN_CFG\n")
+            f.write(" Size\n")
+            f.write(f"    {n}\n")
+            f.write(f" Feature disp {d:.6f}\n")
+            f.write(" Supercell\n")
+            for row in cell:
+                f.write(f"    {row[0]:16.6f}  {row[1]:16.6f}  {row[2]:16.6f}\n")
+            f.write(
+                " AtomData:  id type       cartes_x      cartes_y      cartes_z\n"
+            )
+            for i, (t, pos) in enumerate(zip(types, positions), start=1):
+                f.write(
+                    f"    {i:8d}  {t:3d}    "
+                    f"{pos[0]:14.6f}  {pos[1]:14.6f}  {pos[2]:14.6f}\n"
+                )
+            f.write("END_CFG\n\n")
+
+
+def _write_xyz(configs: list, disp_vals: np.ndarray, path: Path,
+               efs_data: list | None = None) -> None:
+    """Write drag-step structures as extended XYZ.
+
+    efs_data: list of (energy, forces) from _parse_all_efs; when provided,
+    energy and per-atom forces are written into each frame.
     """
-    pos0 = pos[drag_idx]
-    others = np.delete(pos, drag_idx, axis=0)
-    cell_inv = np.linalg.inv(cell)
-    min_d = np.inf
-    for other in others:
-        diff = other - pos0
-        frac = diff @ cell_inv
-        frac -= np.round(frac)
-        diff_mic = frac @ cell
-        proj = float(np.dot(diff_mic, uvec))
-        if proj <= 0:
-            continue  # atom is behind or at start — no collision ahead
-        perp2 = float(np.dot(diff_mic, diff_mic)) - proj ** 2
-        if perp2 < min_sep ** 2:
-            # Drag path passes within min_sep of this atom
-            lim = proj - np.sqrt(max(0.0, min_sep ** 2 - perp2))
-            min_d = min(min_d, max(0.1, lim))
-    return float(min_d)
+    from ase import Atoms
+    from ase.io import write as ase_write
+
+    frames = []
+    efs_iter = iter(efs_data) if efs_data is not None else None
+    for d, (cell, positions, types) in zip(disp_vals, configs):
+        symbols = [_TYPE_TO_SYMBOL.get(t, "X") for t in types]
+        atoms = Atoms(symbols=symbols, positions=positions, cell=cell, pbc=True)
+        atoms.info["disp"] = float(d)
+        if efs_iter is not None:
+            energy, forces = next(efs_iter)
+            atoms.info["energy"] = energy
+            atoms.arrays["forces"] = forces
+        frames.append(atoms)
+    ase_write(str(path), frames, format="extxyz")
 
 
 def drag_scan(
-    cell: np.ndarray,
-    pos: np.ndarray,
-    types: list,
-    drag_idx: int,
-    direction: np.ndarray,
-    n_steps: int,
-    step_size: float,
-    mlp: str,
-    pot: str,
-    outdir: Path,
-    label: str,
-    max_disp: float = 2.0,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Displace atom drag_idx along direction; return (displacements, dE, F_parallel).
-
-    All n_steps configs are written to a single CFG and evaluated in one mlp call.
-    Displacement is automatically capped at max_disp or the safe collision limit.
-    """
+    cell, pos, types, drag_idx, direction, n_steps, step_size,
+    mlp, pot, outdir, label, max_disp=2.0, dft_max_disp=None,
+):
+    """Displace atom along direction; return (disp, dE, Fx, Fy, Fz)."""
     uvec = direction / np.linalg.norm(direction)
     pos0 = pos[drag_idx].copy()
 
-    # Limit displacement to avoid atom-atom overlap
-    safe = _max_safe_disp(pos, cell, drag_idx, uvec, min_sep=1.5)
-    effective_max = min(max_disp, safe, n_steps * step_size)
+    effective_max = dft_max_disp if dft_max_disp is not None else max_disp
+    if dft_max_disp is None:
+        effective_max = min(effective_max, n_steps * step_size)
     actual_steps = max(2, int(effective_max / step_size))
-    if actual_steps < n_steps:
-        print(f"    [{label}] capped at {effective_max:.2f} Å ({actual_steps} steps) "
-              f"to avoid atom overlap")
+    print(f"    [{label}] {actual_steps} steps x {step_size} A = {actual_steps*step_size:.2f} A")
 
     configs = []
-    disp_vals = np.arange(actual_steps) * step_size
-    for d in disp_vals:
+    disp_vals_all = np.arange(actual_steps) * step_size
+    cell_inv = np.linalg.inv(cell)
+
+    safe_disp_vals = []
+    for d in disp_vals_all:
         new_pos = pos.copy()
         new_pos[drag_idx] = pos0 + uvec * d
+        diff = new_pos[drag_idx] - np.delete(new_pos, drag_idx, axis=0)
+        frac = diff @ cell_inv
+        frac -= np.round(frac)
+        min_dist = np.linalg.norm(frac @ cell, axis=1).min()
+        if min_dist < 2:
+            print(f"    [{label}] skipping d={d:.3f} A: min dist {min_dist:.3f} A < 2 A")
+            continue
         configs.append((cell, new_pos, types))
+        safe_disp_vals.append(d)
+    disp_vals = np.array(safe_disp_vals)
 
-    in_cfg = outdir / f"drag_{label}_in.cfg"
-    out_cfg = outdir / f"drag_{label}_out.cfg"
-    write_bare_cfg(configs, in_cfg)
-    rc = calc_efs(mlp, pot, in_cfg, out_cfg, quiet=True)
+    subdir = outdir / label
+    subdir.mkdir(parents=True, exist_ok=True)
+    mlp_in = subdir / "_mlp_in.cfg"
+    mlp_out = subdir / "_mlp_out.cfg"
+    _write_cfg(configs, disp_vals, mlp_in)
+    mlp_out.unlink(missing_ok=True)
+    rc = calc_efs(mlp, pot, mlp_in, mlp_out, quiet=True)
     if rc != 0:
-        raise RuntimeError(f"mlp calculate_efs returned {rc} for direction {label}")
+        raise RuntimeError(f"mlp calculate_efs returned {rc} for {label}")
 
-    efs_data = _parse_all_efs(out_cfg)
-    if len(efs_data) != actual_steps:
-        raise RuntimeError(
-            f"Expected {n_steps} EFS blocks, got {len(efs_data)} for {label}"
-        )
-
+    efs_data = _parse_all_efs(mlp_out)
+    _write_xyz(configs, disp_vals, subdir / "drag_in.xyz")
+    _write_xyz(configs, disp_vals, subdir / "drag_out.xyz", efs_data=efs_data)
     energies = np.array([e for e, _ in efs_data])
-    f_parallel = np.array([
-        float(np.dot(forces[drag_idx], uvec))
-        for _, forces in efs_data
-        if len(forces) > drag_idx
-    ])
-    # Trim disp_vals to match actual efs output length
-    disp_vals = disp_vals[:len(energies)]
+    Fx = np.array([forces[drag_idx,0] for _,forces in efs_data if len(forces)>drag_idx])
+    Fy = np.array([forces[drag_idx,1] for _,forces in efs_data if len(forces)>drag_idx])
+    Fz = np.array([forces[drag_idx,2] for _,forces in efs_data if len(forces)>drag_idx])
 
-    dE = energies - energies[0]
-    return disp_vals, dE, f_parallel
+    n = min(len(disp_vals), len(energies), len(Fx), len(Fy), len(Fz))
+    return disp_vals[:n], (energies[:n] - energies[0]), Fx[:n], Fy[:n], Fz[:n]
 
-
-# ---------------------------------------------------------------------------
-# Main workflow
-# ---------------------------------------------------------------------------
 
 def run(
     pot: str,
@@ -197,20 +229,25 @@ def run(
 
     cell, pos, types = build_drag_supercell(a0)
     n_atoms = len(pos)
-    drag_idx = 0  # drag the first atom (at/near origin)
-    print(f"  {n_atoms}-atom 2×2×2 supercell  |  a0 = {a0:.4f} Å")
-    print(f"  Dragging atom {drag_idx} at {pos[drag_idx]}  |  {n_steps} steps × {step_size} Å")
+    # [111] uses atom 1 (B-sublattice at a/4,a/4,a/4): bonded neighbours are NOT
+    # in [111], giving open space toward the next A-sublattice atom.
+    # All other directions use atom 0 (A-sublattice at origin).
+    DRAG_ATOM = {"[100]": 0, "[110]": 0, "[111]": 1, "[031]": 0}
+    print(f"  {n_atoms}-atom 2×2×2 supercell  |  a0 = {a0:.4f} Å  |  {n_steps} steps × {step_size} Å")
 
     all_results = {}
     for label, direction in DRAG_DIRECTIONS.items():
-        print(f"\n  [{label}]  direction = {direction / np.linalg.norm(direction)}")
-        disp, dE, F_par = drag_scan(
+        drag_idx = DRAG_ATOM[label]
+        print(f"\n  [{label}]  direction = {direction / np.linalg.norm(direction)}"
+              f"  atom {drag_idx} @ {pos[drag_idx]}")
+        dft_max = _dft_max_disp(label)
+        disp, dE, Fx, Fy, Fz = drag_scan(
             cell, pos, types, drag_idx, direction,
             n_steps=n_steps, step_size=step_size,
             mlp=mlp, pot=pot, outdir=outdir, label=label.strip("[]"),
-            max_disp=max_disp,
+            max_disp=max_disp, dft_max_disp=dft_max,
         )
-        all_results[label] = (disp, dE, F_par)
+        all_results[label] = (disp, dE, Fx, Fy, Fz)
         i_max = int(np.argmax(dE))
         print(f"  Max ΔE = {dE[i_max]:.4f} eV at d = {disp[i_max]:.2f} Å")
 
@@ -219,11 +256,11 @@ def run(
     with open(txt, "w") as f:
         f.write(f"# Quasi-static drag  |  pot: {pot}  a0={a0:.4f} Å\n")
         f.write(f"# {n_atoms} atoms  |  {n_steps} steps × {step_size} Å\n\n")
-        for label, (disp, dE, F_par) in all_results.items():
+        for label, (disp, dE, Fx, Fy, Fz) in all_results.items():
             f.write(f"# direction {label}\n")
-            f.write("# disp[A]  dE[eV]  F_par[eV/A]\n")
-            for d, de, fp in zip(disp, dE, F_par):
-                f.write(f"  {d:.4f}  {de:.6f}  {fp:.6f}\n")
+            f.write("# disp[A]  dE[eV]  Fx[eV/A]  Fy[eV/A]  Fz[eV/A]\n")
+            for d, de, x, y, z in zip(disp, dE, Fx, Fy, Fz):
+                f.write(f"  {d:.4f}  {de:.6f}  {x:.6f}  {y:.6f}  {z:.6f}\n")
             f.write("\n")
     print(f"\n  Data written to {txt}")
 
@@ -238,22 +275,47 @@ def run(
         if n_dir == 1:
             axes = axes[:, np.newaxis]
 
-        for col, (label, (disp, dE, F_par)) in enumerate(all_results.items()):
+        fc = {"Fx": "tab:red", "Fy": "tab:blue", "Fz": "tab:green"}
+
+        for col, (label, (disp, dE, Fx, Fy, Fz)) in enumerate(all_results.items()):
             ax_e = axes[0, col]
             ax_f = axes[1, col]
 
-            ax_e.plot(disp, dE * 1000, color="tab:blue", lw=1.5)
+            # --- Energy ---
+            ax_e.plot(disp, dE * 1000, '-o', color="tab:blue", lw=1.5, label="MTP")
             ax_e.axhline(0, color="gray", lw=0.8, ls="--")
-            ax_e.set_ylabel("ΔE (meV)" if col == 0 else "")
+
+            dft_path = DFT_REF_MAP.get(label)
+            if dft_path:
+                rd = load_ref_dft(dft_path)
+                if rd[0] is not None:
+                    ax_e.plot(rd[0], rd[1] * 1000, "s", color="black", ms=3, 
+                              alpha=0.6, label="DFT", zorder=0)
+
+            ax_e.set_ylabel("dE (meV)" if col == 0 else "")
             ax_e.set_title(label, fontsize=11)
             ax_e.set_xlabel("")
+            ax_e.legend(fontsize=7, markerscale=0.8)
 
-            ax_f.plot(disp, F_par, color="tab:orange", lw=1.5)
+            # --- Force components ---
+            mtp_f = {"Fx": Fx, "Fy": Fy, "Fz": Fz}
+            for fl in ["Fx", "Fy", "Fz"]:
+                ax_f.plot(disp, mtp_f[fl], '-o', color=fc[fl], lw=1.0, label=f"MTP {fl}")
             ax_f.axhline(0, color="gray", lw=0.8, ls="--")
-            ax_f.set_xlabel("Displacement (Å)")
-            ax_f.set_ylabel("F‖ (eV/Å)" if col == 0 else "")
 
-        fig.suptitle(f"Quasi-static drag — Ge MTP  (a₀={a0:.3f} Å)", fontsize=13)
+            if dft_path:
+                rd = load_ref_dft(dft_path)
+                if rd[0] is not None:
+                    dft_f = {"Fx": rd[2], "Fy": rd[3], "Fz": rd[4]}
+                    for fl in ["Fx", "Fy", "Fz"]:
+                        ax_f.plot(rd[0], dft_f[fl], "s", color=fc[fl], ms=2.5, 
+                                  alpha=0.5, zorder=0)
+
+            ax_f.set_xlabel("Displacement (A)")
+            ax_f.set_ylabel("Force (eV/A)" if col == 0 else "")
+            ax_f.legend(fontsize=6, markerscale=0.8, ncol=2)
+
+        fig.suptitle(f"Quasi-static drag - Ge MTP  (a0={a0:.3f} A)", fontsize=13)
         fig.tight_layout()
         png = outdir / "qsd.png"
         fig.savefig(png, dpi=150)
@@ -262,11 +324,6 @@ def run(
     except ImportError as e:
         print(f"  Matplotlib not available ({e}); skipping plot.")
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Quasi-static drag test for Ge MTP potential"
@@ -274,10 +331,10 @@ def main() -> None:
     parser.add_argument("--pot", required=True, help="Path to potential (.almtp)")
     parser.add_argument("--a0", type=float, default=5.779,
                         help="Lattice constant Å (default: 5.779)")
-    parser.add_argument("--n-steps", type=int, default=80,
-                        help="Number of drag steps per direction (default: 80)")
-    parser.add_argument("--step-size", type=float, default=0.05,
-                        help="Displacement per step in Å (default: 0.05)")
+    parser.add_argument("--n-steps", type=int, default=15,
+                        help="Number of drag steps per direction (default: 15)")
+    parser.add_argument("--step-size", type=float, default=0.3,
+                        help="Displacement per step in Å (default: 0.3)")
     parser.add_argument("--max-disp", type=float, default=2.0,
                         help="Max displacement per direction in Å (default: 2.0)")
     parser.add_argument("--outdir", default="results/tests/quasi_static_drag")

@@ -1,5 +1,6 @@
 """Smoke test for MTPCalculator — energy is a float, forces ≈ 0 on perfect diamond."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -8,9 +9,9 @@ from ase.build import bulk
 
 sys.path.insert(0, str(Path(__file__).parent))
 from mtp_calculator import MTPCalculator
+from utils import MLP_DEFAULT as MLP
 
-MLP = "/scratch/project_2012355/Paper_3/mlip-3-prune/bin/mlp"
-POT = "/scratch/project_2012355/Paper_3/MTP4Ge/results/potentials/pot.almtp"
+POT = os.environ.get("MTP_POT", "/scratch/project_2012355/Paper_3/MTP4Ge/results/potentials/pot.almtp")
 
 
 def test_mtp_calculator_energy_forces():

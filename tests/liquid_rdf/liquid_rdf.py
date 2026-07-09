@@ -1,7 +1,8 @@
-"""Liquid Ge radial distribution function via LAMMPS NPT→NVT MD.
+"""Liquid Ge radial distribution function via LAMMPS NVT→NPT→NVT MD.
 
 Two-stage protocol:
-  1. NPT equilibration at the liquid temperature / 1 bar — relax to true density
+  1. NVT pre-heat at the liquid temperature — melt gently at constant volume
+  2. NPT equilibration at the liquid temperature / 1 bar — relax to true density
   2. NVT production at the equilibrated density — collect dump frames
 
 Starting from diamond-cubic Ge at the specified lattice constant.
@@ -10,7 +11,7 @@ The NPT barostat allows the system to melt and find its natural liquid density.
 Usage:
     python tests/liquid_rdf/liquid_rdf.py --pot results/potentials/pot.almtp
     python tests/liquid_rdf/liquid_rdf.py --pot results/potentials/pot.almtp \\
-        --nx 4 --ny 4 --nz 4 --T 1500 --steps-npt 20000 --steps-nvt 10000 \\
+        --nx 10 --ny 10 --nz 10 --T 1500 --steps-npt 20000 --steps-nvt 10000 \\
         --outdir results/rdf_output
 """
 
@@ -31,6 +32,7 @@ from utils import compute_rdf, coordination_number, load_ref_rdf, read_lammps_du
 
 LAMMPS_DEFAULT = "lmp_mpi"
 _GE_MASS_AMU = 72.630
+_REF_DIR = Path(__file__).resolve().parent.parent / "reference"
 
 # ---------------------------------------------------------------------------
 # LAMMPS input writer
@@ -39,13 +41,14 @@ _GE_MASS_AMU = 72.630
 def write_liquid_input(
     workdir: Path,
     pot_path: str,
-    nx: int = 4,
-    ny: int = 4,
-    nz: int = 4,
-    a0: float = 5.658,
+    nx: int = 10,
+    ny: int = 10,
+    nz: int = 10,
+    a0: float = 5.5,
     T: float = 1500.0,
-    steps_npt: int = 20000,
-    steps_nvt: int = 10000,
+    steps_nvt_pre: int = 10000,
+    steps_npt: int = 200000,
+    steps_nvt: int = 500,
     seed: int = 12345,
     dump_every: int = 100,
 ) -> int:
@@ -68,7 +71,7 @@ create_box  1 box
 create_atoms 1 box
 mass        1 {_GE_MASS_AMU}
 
-pair_style  mlip load_from={pot_path} select=FALSE
+pair_style  mlip load_from={pot_path}
 pair_coeff  * *
 
 neighbor    2.0 bin
@@ -77,9 +80,14 @@ timestep    0.001   # ps
 thermo      100
 thermo_style custom step time temp press vol etotal
 
-# Stage 1: NPT equilibration at {T:.0f} K, 1 bar
+# Stage 0: NVT pre-heat at {T:.0f} K — melt gently before barostat
 velocity    all create {T} {seed} mom yes rot yes
-fix         npt_eq all npt temp {T} {T} 0.1 iso 1.0 1.0 1.0
+fix         nvt_heat all nvt temp {T} {T} 0.1
+run         {steps_nvt_pre}
+unfix       nvt_heat
+
+# Stage 1: NPT equilibration at {T:.0f} K, 1 bar
+fix         npt_eq all npt temp {T} {T} 0.1 iso 1.0 1.0 10.0
 run         {steps_npt}
 unfix       npt_eq
 
@@ -137,12 +145,12 @@ def run(
     pot: str,
     outdir: Path,
     lammps: str,
-    np_cores: int,
     nx: int,
     ny: int,
     nz: int,
     a0: float,
     T: float,
+    steps_nvt_pre: int,
     steps_npt: int,
     steps_nvt: int,
     rmax: float,
@@ -153,18 +161,18 @@ def run(
 
     Steps:
         1. Write LAMMPS input file
-        2. Run LAMMPS MD simulation (NPT equil + NVT production)
+        2. Run LAMMPS MD simulation (NVT pre-heat + NPT equil + NVT production)
         3. Parse dump, compute g(r)
         4. Plot and save RDF figure + data file
     """
     outdir.mkdir(parents=True, exist_ok=True)
 
     n_atoms = 8 * nx * ny * nz
-    total_time_ps = (steps_npt + steps_nvt) * 0.001
+    total_time_ps = (steps_nvt_pre + steps_npt + steps_nvt) * 0.001
 
     print(f"  Liquid Ge at {T:.0f} K  |  {n_atoms} atoms  "
           f"({nx}x{ny}x{nz} diamond cells, a0={a0} A)")
-    print(f"  Protocol: {steps_npt:,} NPT + {steps_nvt:,} NVT steps "
+    print(f"  Protocol: {steps_nvt_pre:,} NVT pre-heat + {steps_npt:,} NPT + {steps_nvt:,} NVT steps "
           f"({total_time_ps:.1f} ps total)")
 
     workdir = outdir / "lammps_run"
@@ -176,16 +184,14 @@ def run(
     n_atoms_written = write_liquid_input(
         workdir, pot_abs,
         nx=nx, ny=ny, nz=nz, a0=a0,
-        T=T, steps_npt=steps_npt, steps_nvt=steps_nvt,
+        T=T, steps_nvt_pre=steps_nvt_pre, steps_npt=steps_npt, steps_nvt=steps_nvt,
         dump_every=dump_every,
     )
     assert n_atoms_written == n_atoms
 
     # Run LAMMPS
     print("  Running LAMMPS ...")
-    lmp_cmd = [lammps, "-in", "in.liquid", "-log", "liquid.log"]
-    if np_cores > 1:
-        lmp_cmd = ["mpirun", "-np", str(np_cores)] + lmp_cmd
+    lmp_cmd = lammps.split() + ["-in", "in.liquid", "-log", "liquid.log"]
     result = subprocess.run(
         lmp_cmd, cwd=workdir, capture_output=True, text=True
     )
@@ -249,10 +255,22 @@ def run(
         ax.plot(r, g_r, color="tab:purple", lw=1.5, label="MTP")
         ax.axhline(1.0, color="gray", lw=0.8, ls="--")
 
-        # Overlay reference if provided
+        # Auto-load all liquid_*.dat from the reference directory
+        _ref_colors = {"dft": "tab:orange", "exp": "tab:green"}
+        _ref_label  = {"dft": "DFT", "exp": "Exp."}
+        for ref_file in sorted(_REF_DIR.glob("liquid_*.dat")):
+            stem = ref_file.stem.replace("liquid_", "")   # e.g. "dft", "exp"
+            r_ref, g_ref = load_ref_rdf(str(ref_file))
+            if r_ref is not None:
+                color = _ref_colors.get(stem, "tab:gray")
+                label = _ref_label.get(stem, stem)
+                ax.plot(r_ref, g_ref, color=color, lw=1.0, ls="--",
+                        alpha=0.9, label=label)
+
+        # Overlay additional user-specified reference if provided
         r_ref, g_ref = load_ref_rdf(ref_path)
         if r_ref is not None:
-            ax.plot(r_ref, g_ref, color="tab:orange", lw=1.0, ls="--",
+            ax.plot(r_ref, g_ref, color="tab:red", lw=1.0, ls=":",
                     alpha=0.9, label="ref")
 
         ax.axvline(r_peak, color="tab:red", lw=0.8, ls=":",
@@ -290,40 +308,40 @@ def main() -> None:
         help="Path to MTP potential file (.almtp)"
     )
     parser.add_argument(
-        "--nx", type=int, default=4,
-        help="Number of unit cells in x direction (default: 4)"
+        "--nx", type=int, default=3,
+        help="Number of unit cells in x direction (default: 10)"
     )
     parser.add_argument(
-        "--ny", type=int, default=4,
-        help="Number of unit cells in y direction (default: 4)"
+        "--ny", type=int, default=3,
+        help="Number of unit cells in y direction (default: 10)"
     )
     parser.add_argument(
-        "--nz", type=int, default=4,
-        help="Number of unit cells in z direction (default: 4)"
+        "--nz", type=int, default=3,
+        help="Number of unit cells in z direction (default: 10)"
     )
     parser.add_argument(
-        "--a0", type=float, default=5.658,
+        "--a0", type=float, default=5.6,
         help="Lattice constant for diamond-cubic Ge in A (default: 5.658)"
     )
     parser.add_argument(
-        "--T", type=float, default=1500.0,
+        "--T", type=float, default=1300.0,
         help="Liquid temperature in K (default: 1500)"
     )
     parser.add_argument(
-        "--steps-npt", type=int, default=20000,
-        help="NPT equilibration steps (default: 20000 = 20 ps)"
+        "--steps-nvt-pre", type=int, default=1000,
+        help="NVT pre-heat steps before NPT (default: 1000 = 1 ps)"
     )
     parser.add_argument(
-        "--steps-nvt", type=int, default=10000,
-        help="NVT production steps (default: 10000 = 10 ps)"
+        "--steps-npt", type=int, default=20000,
+        help="NPT equilibration steps (default: 10000 = 10 ps)"
+    )
+    parser.add_argument(
+        "--steps-nvt", type=int, default=500,
+        help="NVT production steps (default: 500 = 0.5 ps)"
     )
     parser.add_argument(
         "--lammps", default=LAMMPS_DEFAULT,
         help="LAMMPS binary path (default: lmp_mpi)"
-    )
-    parser.add_argument(
-        "--np", type=int, default=1,
-        help="MPI processes (default: 1; wraps with mpirun if >1)"
     )
     parser.add_argument(
         "--outdir", default="results/tests/liquid_rdf",
@@ -347,12 +365,12 @@ def main() -> None:
         pot=args.pot,
         outdir=Path(args.outdir),
         lammps=args.lammps,
-        np_cores=args.np,
         nx=args.nx,
         ny=args.ny,
         nz=args.nz,
         a0=args.a0,
         T=args.T,
+        steps_nvt_pre=args.steps_nvt_pre,
         steps_npt=args.steps_npt,
         steps_nvt=args.steps_nvt,
         rmax=args.rmax,

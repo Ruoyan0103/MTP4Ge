@@ -1,14 +1,15 @@
 # LAMMPS NVT molecular dynamics template for liquid Ge
-# Placeholders filled at runtime by src/md_test.py:
-#   ${T_RUN}      → temperature in Kelvin
-#   ${RUN_STEPS}  → total number of MD steps
-#
-# TODO (MD details TBD): adjust box size, atom count, and thermostat parameters
-# to match desired simulation conditions.
+# Placeholders filled at runtime by src/md_test.py and src/active_learning.py:
+#   ${T_RUN}           → temperature in Kelvin
+#   ${LAT_PARAM}       → diamond cubic lattice constant (Å); set lat_param in active_learning.yaml
+#   ${SUPERCELL_SIZE}  → supercell repeat count (e.g. 2 → 2×2×2 = 64 atoms)
+#   ${POT_PATH}        → absolute path to pot.almtp
+#   ${GRADE_THRESHOLD} → γ_select
+#   ${GRADE_BREAK}     → γ_break (set equal to γ_select for selecting one config per trajectory)
 
 #===================== Simulation Parameters =======================
 variable T          equal ${T_RUN}
-variable run_steps  equal ${RUN_STEPS}
+variable run_steps  equal 10000
 variable SEED       equal 12345
 
 #===================== System Setup ================================
@@ -16,20 +17,18 @@ units       metal
 boundary    p p p
 atom_style  atomic
 
-# TODO: replace with actual Ge liquid structure or lattice
-# Option 1: read from a pre-equilibrated LAMMPS data file
-# read_data   data/Ge_liquid.lammps
-
-# Option 2: create from FCC lattice and melt (simple starting point)
-variable lat_param equal 5.658   # Ge diamond cubic lattice constant (Å)
+variable    lat_param equal ${LAT_PARAM}   # Ge diamond cubic lattice constant (Å)
 lattice     diamond ${lat_param}
-region      box block 0 4 0 4 0 4 units lattice
+region      box block 0 ${SUPERCELL_SIZE} 0 ${SUPERCELL_SIZE} 0 ${SUPERCELL_SIZE} units lattice
 create_box  1 box
 create_atoms 1 box
 mass        1 72.630              # Ge atomic mass (amu)
 
 #===================== Potential ===================================
-pair_style  mlip param_file=mlip.ini
+pair_style  mlip load_from=${POT_PATH} extrapolation_control=true &
+            threshold_save=${GRADE_THRESHOLD} &
+            threshold_break=${GRADE_BREAK} &
+            save_extrapolative_to=preselected.cfg
 pair_coeff  * *
 
 neighbor    2.0 bin
@@ -40,16 +39,14 @@ velocity    all create ${T} ${SEED} mom yes rot yes
 
 #===================== Thermodynamics ==============================
 thermo_style custom step time temp press vol etotal
-thermo      1000
+thermo      100
 
 #===================== NVT Run =====================================
 fix         1 all nvt temp ${T} ${T} 0.1
 timestep    0.001
 
-dump        1 all custom 1000 dump.lammpstrj id type x y z vx vy vz
+dump        1 all custom 100 dump.lammpstrj id type x y z vx vy vz
 dump_modify 1 sort id
 
 run         ${run_steps}
 unfix       1
-
-write_data  end_structure.lammps

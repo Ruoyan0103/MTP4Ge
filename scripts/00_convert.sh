@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Convert train_liquid.xyz to MLIP-3 CFG format.
+# Convert train.xyz to MLIP-3 CFG format.
 #
 # Produces:
-#   data/train.cfg — all DFT-labeled configs (used as candidate pool for AL)
+#   data/train.cfg — all DFT-labeled configs
 #
 # Usage:
 #   bash scripts/00_convert.sh [input.xyz]
@@ -11,7 +11,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-INPUT="${1:-/scratch/project_2012355/Paper_3/train_dataset/train_liquid.xyz}"
+INPUT="${1:-/scratch/project_2012355/Paper_3/MTP4Ge/data/val.xyz}"
 OUTDIR="data"
 
 echo "=== Data Conversion ==="

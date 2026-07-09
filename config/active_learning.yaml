@@ -1,20 +1,90 @@
 # Active Learning Configuration
 
-# Extrapolation grade threshold: configs with grade > threshold are selected
-grade_threshold: 2.0
+init_train_cfg: data/train-2026-06-26.cfg # base training set copied into the dated train file on first AL run
+init_test_cfg: data/test-2026-06-26.cfg   # base test set copied into the dated test file on first AL run
+init_train_pot: results/potentials/pot-2026-06-26.almtp  # initial potential for Step A (iteration 1)
 
 # Maximum number of active learning iterations
-max_iterations: 20
+max_iterations: 200
 
-# MD settings (Step B)
-temperature: 300                    # K — default temperature for AL MD
-md_steps: 10000                     # MD steps per iteration
-lammps_binary: srun -n 32 lmp_mpi      # LAMMPS launch command (srun for HPC)
+# MD settings (Step A)
+lammps_binary: /projappl/project_2012355/CODE/lammps-stable_23Jun2022_update4-EPH/src/lmp_mpi
+lat_param: 5.76                      # default Ge diamond cubic lattice constant (Å); used for solid trajectories without explicit lat_param
+
+# Parallel trajectories for Step A.
+# When this key is present, active_learning.py launches all N LAMMPS jobs
+# simultaneously (one per entry) and merges their preselected.cfg files into a
+# single pool before select_add runs MaxVol selection.
+#
+# Each entry requires: temperature (K).
+# Optional per-entry keys (all templates):
+#   lat_param       : Å; if absent, liquid entries derive it from ρ(T), solid
+#                     entries fall back to the global lat_param above
+#   supercell_size  : integer N; tiles the primitive/cubic cell N×N×N before
+#                     passing to LAMMPS (default 1; overrides global supercell_size)
+#   template        : 'solid' (default, uses md_nvt.in) or
+#                     'liquid' (3-step melt→cool→equil, uses md_nvt_liquid.in)
+#   grade_threshold : γ_select for this trajectory (overrides global grade_threshold)
+#   grade_break     : γ_break  for this trajectory; set equal to grade_threshold
+#                     to collect at most one config per liquid trajectory
+#
+# Liquid-only keys:
+#   coef            : compression/expansion coefficient; lat_param is multiplied
+#                     by (1 + coef). e.g. coef: 0.05 → 5% expansion of the box
+#   cubic           : true → conventional 8-atom cubic cell; false → FCC primitive
+#                     cell (2 atoms, default); overrides global cubic
+#
+# Solid-only keys:
+#   strain          : True/False; when True, AL-selected structures are strained
+#                     (30 variants: hydrostatic × uniaxial × shear, ε ±1–5%)
+#                     before DFT labeling
+#   no_al           : True/False; when True, skip LAMMPS and select_add entirely
+#                     — build a 1×1×1 diamond cubic cell (8 atoms) from the
+#                     global lat_param (or per-entry lat_param override), apply
+#                     30 strains, and run DFT; the potential is not consulted
+#
+# Liquid lat_param values derived from ρ(T) = −4.42×10⁻⁴·T + 6.17 g/cm³. a = (8·M / (Nₐ · ρ))^(1/3) × 10⁸ [Å] {https://doi.org/10.1016/S0022-0248(99)00089-5}
+trajectories:
+  # added structures in 2026-06-18
+  #- {temperature: 1000,  template: liquid,  grade_threshold: 2, grade_break: 10}
+  #- {temperature: 1200,  template: liquid,  grade_threshold: 2, grade_break: 10}
+  #- {temperature: 1400,  template: liquid,  grade_threshold: 2, grade_break: 10}
+  # added structures in 2026-06-18
+
+  #- {template: solid, no_al: true, supercell_size: 1, cubic: true}  added 
+  - {temperature: 1600,  template: liquid,  supercell_size: 4, cubic: false, coef: 0.03, grade_threshold: 2, grade_break: 10}
+  - {temperature: 1600,  template: liquid,  supercell_size: 4, cubic: false, coef: 0.05, grade_threshold: 2, grade_break: 10}
+  - {temperature: 1800,  template: liquid,  supercell_size: 4, cubic: false, coef: 0.03, grade_threshold: 2, grade_break: 10}
+  - {temperature: 1800,  template: liquid,  supercell_size: 4, cubic: false, coef: 0.05, grade_threshold: 2, grade_break: 10}
+
+
 
 # VASP DFT settings (Step D/E — default single-point parameters)
-vasp_command: srun -n 32 vasp_std  # VASP launch command (srun for HPC)
-vasp_encut: 400                     # plane-wave cutoff (eV)
-vasp_ediff: 1.0e-6                  # SCF convergence criterion
-vasp_pp_path: /appl/soft/phys/vasp/potpaw_PBE.64   # parent dir for POTCAR files
+max_dft_per_iter: 0          # max DFT jobs per iteration (0 = no cap)
+vasp_mode: sbatch            # 'sbatch': submit a new SLURM array job; 'inline': run in parallel using current allocation
+vasp_command: srun vasp_std  # VASP launch command inside each array task
+# SLURM settings for the VASP array job (Steps D/E, used only when vasp_mode=sbatch)
+slurm_account: project_2001625
+slurm_partition: medium
+slurm_time_dft: "36:00:00"    # wall time per VASP array task
+slurm_ntasks_dft: 40          # MPI tasks per VASP job
+slurm_setup_dft: "module load gcc/11.2.0 openmpi/4.1.2 hdf5/1.10.7-mpi netlib-scalapack fftw/3.3.10-mpi-omp vasp/6.4.3"  # shell commands run before vasp_command
+vasp_encut: 500                     # ENCUT  — plane-wave cutoff (eV)
+vasp_kspacing: 0.15                 # KSPACING — k-point spacing (1/Å); remove this line to use a Gamma-only KPOINTS file instead
+vasp_sigma: 0.05                    # SIGMA  — smearing width (eV)
+vasp_ediff: 1.0e-7                  # EDIFF  — SCF convergence criterion
+vasp_gga: pbe                       # GGA    — exchange-correlation functional (ASE name; PE = PBE)
+vasp_prec: Normal                   # PREC   — precision mode
+vasp_ibrion: -1                     # IBRION — ionic relaxation algorithm (-1 = no relaxation)
+vasp_isif: 2                        # ISIF   — stress/relaxation flag (2 = forces only)
+vasp_ismear: 0                      # ISMEAR — smearing method (0 = Gaussian)
+vasp_nelm: 100                      # NELM   — max SCF iterations
+vasp_nsw: 0                         # NSW    — max ionic steps (0 = single-point)
+vasp_kgamma: true                   # KGAMMA — Gamma-centred k-mesh
+vasp_lasph: true                    # LASPH  — non-spherical contributions to PAW
+vasp_lcharg: false                  # LCHARG — write CHGCAR
+vasp_lwave: false                   # LWAVE  — write WAVECAR
+vasp_pp_path: /appl/soft/phys/vasp  # parent of potpaw_PBE.64/
+vasp_pp_version: "64"               # ASE 3.28+ requires explicit version; selects potpaw_PBE.64/
 vasp_setups:                        # pseudopotential variant per element
   Ge: "_d"                          # uses Ge_d/POTCAR (includes d electrons)

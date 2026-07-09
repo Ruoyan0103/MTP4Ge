@@ -1,0 +1,7 @@
+# Defect formation energies — GAP reference (GAP-Ge paper, Table 3 / Fig. 4)
+# Format: name  E_f(eV)
+vacancy         2.06
+T_interstitial  2.72
+H_interstitial  3.17
+X_dumbbell      2.64
+B_bond_center   3.87
