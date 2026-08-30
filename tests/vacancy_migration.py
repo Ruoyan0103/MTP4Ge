@@ -21,6 +21,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 from mtp_calculator import MTPCalculator
+from utils import write_bare_cfg
 
 MLP_DEFAULT = "/scratch/project_2012355/Paper_3/mlip-3-prune/bin/mlp"
 
@@ -32,8 +33,8 @@ GAP_REF = {"1NN": 0.21, "2NN": 1.71}
 # Structure builders
 # ---------------------------------------------------------------------------
 
-def build_vacancy_supercell(a0: float, repeat: tuple = (3, 3, 3)):
-    """3×3×3 diamond supercell with one vacancy.
+def build_vacancy_supercell(a0: float, repeat: tuple = (2, 2, 2)):
+    """2×2×2 diamond supercell with one vacancy.
 
     Returns (atoms_with_vacancy, vac_pos_cartesian) as ASE Atoms.
     The vacancy is created by removing the atom nearest to the origin.
@@ -60,7 +61,7 @@ def _nn_distances(atoms, vac_pos: np.ndarray) -> np.ndarray:
     return np.linalg.norm(diff_mic, axis=1)
 
 
-def build_neb_endpoints(a0: float, hop_shell: int, repeat: tuple = (3, 3, 3)):
+def build_neb_endpoints(a0: float, hop_shell: int, repeat: tuple = (2, 2, 2)):
     """Build initial and final ASE Atoms for a vacancy hop.
 
     hop_shell=1 → 1NN hop (distance ≈ a0·√3/4)
@@ -110,6 +111,24 @@ def build_neb_endpoints(a0: float, hop_shell: int, repeat: tuple = (3, 3, 3)):
 # NEB runner
 # ---------------------------------------------------------------------------
 
+def _save_neb_images(images, outdir: Path) -> None:
+    """Write each NEB image (initial, intermediates, final) to xyz+POSCAR+lammps-data+cfg."""
+    from ase.io import write as ase_write
+    outdir.mkdir(parents=True, exist_ok=True)
+    n = len(images)
+    for i, img in enumerate(images):
+        tag = "initial" if i == 0 else "final" if i == n - 1 else f"image{i:02d}"
+        base = outdir / f"{i:02d}_{tag}"
+        ase_write(str(base.with_suffix(".xyz")), img, format="extxyz")
+        ase_write(str(base.with_suffix(".POSCAR")), img, format="vasp")
+        ase_write(str(base.with_suffix(".data")), img,
+                  format="lammps-data", atom_style="atomic")
+        cell = img.get_cell().array
+        pos = img.get_positions()
+        types = [0] * len(img)  # single-species Ge (SPECIES_MAP: {"Ge": 0})
+        write_bare_cfg([(cell, pos, types)], base.with_suffix(".cfg"))
+
+
 def _relax_endpoint(atoms, mlp: str, pot: str, fmax: float = 0.02, max_steps: int = 300):
     """Relax a vacancy supercell to its local minimum before NEB.
 
@@ -136,6 +155,7 @@ def run_neb(
     fmax: float = 0.05,
     fmax_relax: float = 0.02,
     max_steps: int = 200,
+    image_dir: Path | None = None,
 ) -> tuple[float, np.ndarray, np.ndarray]:
     """Run climbing-image NEB; return (barrier [eV], distances, energies).
 
@@ -144,6 +164,9 @@ def run_neb(
     required for accurate barrier heights).
 
     Creates a fresh MTPCalculator for each image to avoid shared-state issues.
+    If image_dir is given, writes every image (initial, intermediates, final)
+    to image_dir/before/ right after interpolation and to image_dir/after/
+    once the band optimisation finishes.
     """
     from ase.mep.neb import NEB
     from ase.optimize import BFGS
@@ -166,10 +189,18 @@ def run_neb(
     neb = NEB(images, climb=True, k=1.0)
     neb.interpolate()
 
+    if image_dir is not None:
+        _save_neb_images(images, image_dir / "before")
+        print(f"  Pre-NEB images written to {image_dir / 'before'}")
+
     optimizer = BFGS(neb, trajectory=None)
     converged = optimizer.run(fmax=fmax, steps=max_steps)
     if not converged:
         print(f"  Warning: NEB did not converge in {max_steps} steps")
+
+    if image_dir is not None:
+        _save_neb_images(images, image_dir / "after")
+        print(f"  Post-NEB images written to {image_dir / 'after'}")
 
     # Extract energies along the path
     energies = np.array([img.get_potential_energy() for img in images])
@@ -218,7 +249,7 @@ def run(pot: str, outdir: Path, mlp: str, a0: float,
         barrier, arc, energies = run_neb(
             initial, final, mlp, pot,
             n_images=n_images, fmax=fmax, fmax_relax=fmax_relax,
-            max_steps=max_steps,
+            max_steps=max_steps, image_dir=outdir / label,
         )
         neb_results[label] = (arc, energies, barrier)
 
@@ -288,8 +319,8 @@ def main() -> None:
         description="Vacancy migration NEB test for Ge MTP potential"
     )
     parser.add_argument("--pot", required=True, help="Path to potential (.almtp)")
-    parser.add_argument("--a0", type=float, default=5.779,
-                        help="Lattice constant Å — use MTP equilibrium (default: 5.779)")
+    parser.add_argument("--a0", type=float, default=5.76,
+                        help="Lattice constant Å — use MTP equilibrium (default: 5.76)")
     parser.add_argument("--n-images", type=int, default=7,
                         help="Number of NEB intermediate images (default: 7)")
     parser.add_argument("--fmax", type=float, default=0.05,

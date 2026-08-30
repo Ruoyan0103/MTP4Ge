@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=mtp_defects
 #SBATCH --account=project_2012355
-#SBATCH --partition=small
-#SBATCH --time=02:00:00
+#SBATCH --partition=test
+#SBATCH --time=01:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
+#SBATCH --ntasks=50
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
 #SBATCH --output=logs/defect_%j.out
@@ -16,8 +16,8 @@ cd "$REPO_ROOT"
 
 source /scratch/project_2012355/Paper_3/mtp-env/bin/activate
 
-POT="${1:-results/potentials/pot_al.almtp}"
-A0="${2:-5.779}"
+POT="${1:-results/potentials/pot-2026-07-19.almtp}"
+A0="${2:-5.758}"
 FMAX="${3:-0.0001}"
 MAXSTEPS="${4:-500}"
 

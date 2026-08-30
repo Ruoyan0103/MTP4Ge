@@ -1,28 +1,42 @@
 """
 Phonon dispersion quality test for MTP potentials.
 
-Generates displaced supercells via phonopy, evaluates forces with
-mlp calculate_efs, and produces a side-by-side phonon band structure
-(Γ→X→K→Γ→L, FCC BZ, diamond cubic Ge) and total DOS plot.
+Generates displaced supercells via phonopy, evaluates forces (either
+`mlp calculate_efs` or LAMMPS + pair_style mlip), and produces a side-by-side
+phonon band structure (Γ→X→K→Γ→L, FCC BZ, diamond cubic Ge) and total DOS plot.
 
 Usage:
     python tests/phonon_dispersion.py --pot results/potentials/pot.almtp
     python tests/phonon_dispersion.py --pot results/potentials/pot.almtp \\
         --alat 5.658 --supercell 2 --displacement 0.01 --npoints 51
+    python tests/phonon_dispersion.py --pot results/potentials/pot.almtp \\
+        --method lammps --lammps "srun /path/to/lmp_mpi"
 """
 
 import argparse
 import re
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
 import numpy as np
 import yaml
 
+# Must be imported before `phonopy` anywhere in this process: on this cluster
+# a system (TYKKY) scipy install shadows the venv's scipy if phonopy resolves
+# scipy first, causing an ABI mismatch (CXXABI_1.3.15 not found) deep inside
+# ase.io -> ase.dft.kpoints -> scipy.optimize the first time ase.io is used.
+# Importing ase.io up front caches the correct scipy in sys.modules first.
+import ase.io  # noqa: F401
+
 sys.path.insert(0, str(Path(__file__).parent))
 from utils import calc_efs, write_bare_cfg
 
 DEFAULT_TRAIN_CONFIG = "config/training.yaml"
+DEFAULT_AL_CONFIG = "config/active_learning.yaml"
+LAMMPS_TEMPLATE = Path("config/lammps/phonon_dispersion.in")
+GE_MASS = 72.630
 
 # High-symmetry q-path in FCC primitive reciprocal coordinates: Γ→X→K | U→Γ→L
 #
@@ -32,22 +46,19 @@ DEFAULT_TRAIN_CONFIG = "config/training.yaml"
 #
 # K ≠ U numerically, so get_band_qpoints_and_path_connections produces
 # path_connections = [True, False, True] — a path break at the zone boundary.
-# This is the standard FCC phonon dispersion convention (ilearn, Bilbao BZ)
-# and avoids the eigenvalue-sorting kink caused by forcing continuity through
-# the BZ corner.  Phonopy distances are always cumulative (no x-axis reset at
-# the break), so _rescale_x aligns DFT/EXP overlays correctly.
 
-# _QPATH = [
-#     [[0,0,0], [0.5,0,0.5]],             # Γ→X
-#     [[0.5,0,0.5], [0.625,0.25,0.625]],  # X→K (U point, Dolling 1963)
-#     [[0.625,0.25,0.625], [0,0,0]],      # K→Γ
-#     [[0,0,0], [0.5,0.5,0.5]],           # Γ→L
-# ]
 
+# Matches tests/reference/dft-555-80K/band.conf's BAND grouping exactly:
+#   Γ→X | (1/2,1/2,1)→K→Γ→L — the break sits right after X, not after
+#   (1/2,1/2,1). (1/2,1/2,1) is periodicity+point-group equivalent to X
+#   (see project notes), so this traces the (1/2,1/2,1)→K segment, not the
+#   X→(1/2,1/2,1) segment the grouping above would produce. Kept deliberately
+#   to match the digitized experimental reference's path convention.
 _QPATH = [
-    [[0.0, 0.0, 0.0], [0.5, 0.0, 0.5], [0.375, 0.375, 0.75]],   # Γ → X → K
-    [[0.625, 0.25, 0.625], [0.0, 0.0, 0.0], [0.5, 0.5, 0.5]],   # U → Γ → L
+    [[0.0, 0.0, 0.0], [0.5, 0.0, 0.5]],
+    [[0.5, 0.5, 1.0], [0.375, 0.375, 0.75], [0.0, 0.0, 0.0], [0.5, 0.5, 0.5]],
 ]
+
 
 _LABELS = [r"$\Gamma$", "X", "K", r"$\Gamma$", "L"]
 
@@ -55,16 +66,6 @@ _LABELS = [r"$\Gamma$", "X", "K", r"$\Gamma$", "L"]
 # ---------------------------------------------------------------------------
 # Structure conversion helpers
 # ---------------------------------------------------------------------------
-
-def _ase_to_phonopy(atoms):
-    """Convert ASE Atoms → PhonopyAtoms."""
-    from phonopy.structure.atoms import PhonopyAtoms
-    return PhonopyAtoms(
-        symbols=list(atoms.get_chemical_symbols()),
-        cell=atoms.get_cell().array.copy(),
-        scaled_positions=atoms.get_scaled_positions(),
-    )
-
 
 def _phonopy_to_tuple(ph_atoms):
     """Convert PhonopyAtoms → (cell, positions, types) for write_bare_cfg.
@@ -76,6 +77,73 @@ def _phonopy_to_tuple(ph_atoms):
     sym_idx = {s: i for i, s in enumerate(unique)}
     types = [sym_idx[s] for s in symbols]
     return ph_atoms.cell.copy(), ph_atoms.positions.copy(), types
+
+
+def _phonopy_to_ase(ph_atoms):
+    """Convert PhonopyAtoms → ASE Atoms."""
+    from ase import Atoms
+    return Atoms(
+        symbols=list(ph_atoms.symbols),
+        cell=ph_atoms.cell.copy(),
+        positions=ph_atoms.positions.copy(),
+        pbc=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# LAMMPS force evaluation (pair_style mlip)
+# ---------------------------------------------------------------------------
+
+def _parse_forces_from_dump(path: Path, n_atoms: int) -> np.ndarray:
+    """Parse a `dump custom ... id type x y z fx fy fz` snapshot → (n_atoms, 3)."""
+    lines = path.read_text().splitlines()
+    start = next(i for i, l in enumerate(lines) if l.startswith("ITEM: ATOMS")) + 1
+    forces = np.zeros((n_atoms, 3))
+    for line in lines[start:start + n_atoms]:
+        parts = line.split()
+        atom_id = int(parts[0])
+        forces[atom_id - 1] = [float(parts[5]), float(parts[6]), float(parts[7])]
+    return forces
+
+
+def _run_lammps_forces(
+    lammps_cmd: str, pot: str, supercells: list, outdir: Path,
+) -> list[np.ndarray]:
+    """Run one LAMMPS single-point evaluation (pair_style mlip) per displaced
+    supercell and return the per-atom forces, in supercell order.
+    """
+    from ase.io import write as ase_write
+
+    template = LAMMPS_TEMPLATE.read_text()
+    pot_abs = str(Path(pot).resolve())
+    lammps_dir = outdir / "lammps"
+
+    forces_list = []
+    for i, sc in enumerate(supercells):
+        disp_dir = lammps_dir / f"disp_{i:03d}"
+        disp_dir.mkdir(parents=True, exist_ok=True)
+
+        atoms = _phonopy_to_ase(sc)
+        ase_write(str(disp_dir / "structure.lammps"), atoms,
+                  format="lammps-data", atom_style="atomic")
+
+        text = (
+            template
+            .replace("${STRUCT_FILE}", "structure.lammps")
+            .replace("${POT_PATH}", pot_abs)
+            .replace("${MASS}", str(GE_MASS))
+        )
+        (disp_dir / "in.phonon").write_text(text)
+
+        cmd = shlex.split(lammps_cmd) + ["-in", "in.phonon", "-log", "log.lammps", "-screen", "none"]
+        print(f"  LAMMPS [{i + 1}/{len(supercells)}]:", " ".join(cmd), f"(cwd={disp_dir})")
+        result = subprocess.run(cmd, cwd=str(disp_dir))
+        if result.returncode != 0:
+            raise RuntimeError(f"LAMMPS exited {result.returncode}; see {disp_dir / 'log.lammps'}")
+
+        forces_list.append(_parse_forces_from_dump(disp_dir / "force.dump", len(atoms)))
+
+    return forces_list
 
 
 # ---------------------------------------------------------------------------
@@ -424,44 +492,71 @@ def run(
     npoints: int,
     mlp: str,
     dos_mesh: int,
+    method: str = "mtp",
+    lammps_cmd: str | None = None,
 ) -> None:
-    from ase.build import bulk
     from phonopy import Phonopy
+    from phonopy.structure.atoms import PhonopyAtoms
     from phonopy.phonon.band_structure import get_band_qpoints_and_path_connections
 
     outdir.mkdir(parents=True, exist_ok=True)
 
-    atoms = bulk("Ge", crystalstructure="diamond", a=alat)
-    unitcell = _ase_to_phonopy(atoms)
+    # Conventional 8-atom cubic diamond cell + primitive_matrix reduction to the
+    # 2-atom FCC primitive cell (ilearn convention). Supercells built this way
+    # are orthogonal (LAMMPS-friendly); the FCC primitive cell's own ~60°
+    # lattice vectors would otherwise produce triclinic tilt factors beyond
+    # LAMMPS's default skew limit. The primitive reciprocal lattice — and
+    # therefore _QPATH — is identical either way.
+    unitcell = PhonopyAtoms(
+        symbols=["Ge"] * 8,
+        cell=np.eye(3) * alat,
+        scaled_positions=[
+            [0, 0, 0], [0, 0.5, 0.5], [0.5, 0, 0.5], [0.5, 0.5, 0],
+            [0.25, 0.25, 0.25], [0.25, 0.75, 0.75], [0.75, 0.25, 0.75], [0.75, 0.75, 0.25],
+        ],
+    )
     S = supercell_size
-    print(f"  Unit cell: {len(atoms)} atoms (FCC primitive)  |  a = {alat:.4f} Å")
-    print(f"  Supercell: {S}×{S}×{S} primitive = {S**3 * len(atoms)} atoms per displaced config")
+    print(f"  Unit cell: 8 atoms (conventional cubic)  |  a = {alat:.4f} Å")
+    print(f"  Supercell: {S}×{S}×{S} conventional = {S**3 * 8} atoms per displaced config")
 
     phonon = Phonopy(
         unitcell,
         supercell_matrix=[[S, 0, 0], [0, S, 0], [0, 0, S]],
+        primitive_matrix=[[0, 0.5, 0.5], [0.5, 0, 0.5], [0.5, 0.5, 0]],
     )
     phonon.generate_displacements(distance=displacement)
     supercells = phonon.supercells_with_displacements
     print(f"  Generated {len(supercells)} displaced supercell(s)")
 
-    configs = [_phonopy_to_tuple(sc) for sc in supercells]
-
-    in_cfg  = outdir / "displaced.cfg"
-    out_cfg = outdir / "displaced_efs.cfg"
-
-    if out_cfg.exists():
-        print(f"  Found existing {out_cfg.name} — skipping mlp calculation")
+    if method == "lammps":
+        print(f"  Method: LAMMPS force evaluation (pair_style mlip, {lammps_cmd})")
+        cache = outdir / "lammps_forces.npz"
+        if cache.exists():
+            print(f"  Found existing {cache.name} — skipping LAMMPS calculation")
+            data = np.load(cache)
+            forces_list = [data[f"arr_{i}"] for i in range(len(supercells))]
+        else:
+            forces_list = _run_lammps_forces(lammps_cmd, pot, supercells, outdir)
+            np.savez(cache, *forces_list)
     else:
-        write_bare_cfg(configs, in_cfg)
-        rc = calc_efs(mlp, pot, in_cfg, out_cfg)
-        if rc != 0:
-            print(f"  Warning: mlp calculate_efs returned {rc}")
-        if not out_cfg.exists():
-            print("  Error: no EFS output produced.", file=sys.stderr)
-            sys.exit(1)
+        configs = [_phonopy_to_tuple(sc) for sc in supercells]
 
-    forces_list = _parse_forces_from_cfg(out_cfg)
+        in_cfg  = outdir / "displaced.cfg"
+        out_cfg = outdir / "displaced_efs.cfg"
+
+        if out_cfg.exists():
+            print(f"  Found existing {out_cfg.name} — skipping mlp calculation")
+        else:
+            write_bare_cfg(configs, in_cfg)
+            rc = calc_efs(mlp, pot, in_cfg, out_cfg)
+            if rc != 0:
+                print(f"  Warning: mlp calculate_efs returned {rc}")
+            if not out_cfg.exists():
+                print("  Error: no EFS output produced.", file=sys.stderr)
+                sys.exit(1)
+
+        forces_list = _parse_forces_from_cfg(out_cfg)
+
     if len(forces_list) != len(supercells):
         print(
             f"  Error: expected {len(supercells)} force blocks, got {len(forces_list)}",
@@ -569,8 +664,8 @@ def main() -> None:
                              "FCC primitive cell (default: 6 → 432 atoms)")
     parser.add_argument("--displacement", type=float, default=0.01,
                         help="Phonopy displacement distance in Å (default: 0.01)")
-    parser.add_argument("--npoints", type=int, default=51,
-                        help="q-points per path segment (default: 51)")
+    parser.add_argument("--npoints", type=int, default=11,
+                        help="q-points per path segment (default: 11)")
     parser.add_argument("--dos-mesh", type=int, default=30,
                         help="Uniform q-mesh size for DOS (default: 30 → 30×30×30)")
     parser.add_argument("--outdir", default="results/tests/phonon_dispersion",
@@ -579,12 +674,25 @@ def main() -> None:
                         help="Training YAML config (provides mlp_binary)")
     parser.add_argument("--mlp", default=None,
                         help="Override mlp binary path")
+    parser.add_argument("--method", choices=["mtp", "lammps"], default="mtp",
+                        help="'mtp' (default): mlp calculate_efs on displaced supercells. "
+                             "'lammps': run LAMMPS (pair_style mlip) per displaced supercell, "
+                             "as in the ilearn workflow.")
+    parser.add_argument("--al-config", default=DEFAULT_AL_CONFIG,
+                        help="Active-learning YAML config (provides lammps_binary; --method lammps only)")
+    parser.add_argument("--lammps", default=None,
+                        help="Override LAMMPS command (--method lammps only), e.g. 'srun /path/to/lmp_mpi'")
     args = parser.parse_args()
 
     mlp = args.mlp
     if mlp is None:
         with open(args.config) as f:
             mlp = yaml.safe_load(f)["mlp_binary"]
+
+    lammps_cmd = args.lammps
+    if args.method == "lammps" and lammps_cmd is None:
+        with open(args.al_config) as f:
+            lammps_cmd = yaml.safe_load(f)["lammps_binary"]
 
     run(
         pot=args.pot,
@@ -595,6 +703,8 @@ def main() -> None:
         npoints=args.npoints,
         mlp=mlp,
         dos_mesh=args.dos_mesh,
+        method=args.method,
+        lammps_cmd=lammps_cmd,
     )
 
 

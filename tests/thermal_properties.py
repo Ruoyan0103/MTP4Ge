@@ -203,9 +203,9 @@ def _plot_thermal(
             temp_bm, val_bm = 77, 77
         else:
             temp_bm, val_bm = bm_exp[:, 0], bm_exp[:, 1]
-        ax.scatter(temp_bm, val_bm, marker='*',
-                   facecolors='none', edgecolors='blue',
-                   label='Exp. Yin et al.', s=50, linewidth=1)
+        # ax.scatter(temp_bm, val_bm, marker='*',
+        #            facecolors='none', edgecolors='blue',
+        #            label='Exp. Yin et al.', s=50, linewidth=1)
     ax.legend(loc='best', framealpha=1, fontsize=8)
     ax.minorticks_on()
     ax.tick_params(axis='both', which='major', length=5)
@@ -247,14 +247,19 @@ def run(
 
     outdir.mkdir(parents=True, exist_ok=True)
 
-    rates = np.linspace(vol_range_start, vol_range_end, n_volumes)
+    vol_rates = np.linspace(vol_range_start, vol_range_end, n_volumes)
+    lat_rates = (1 + vol_rates) ** (1 / 3) - 1
     S = supercell_size
-    print(f"  QHA: {n_volumes} volumes, a = {alat:.4f} * (1 + r) for r in "
+    print(f"  QHA: {n_volumes} volumes, V = V0 * (1 + r) for V in "
           f"[{vol_range_start}, {vol_range_end}]")
-    print(f"  Supercell: {S}x{S}x{S} primitive = {S**3 * 2} atoms per displaced config")
+    print(f"  Supercell: {S}x{S}x{S} cubic = {S**3 * 8} atoms per displaced config")
 
-    # Build unit cells and collect volumes
-    unit_cells = [bulk("Ge", crystalstructure="diamond", a=alat * (1 + r)) for r in rates]
+    # Build unit cells and collect volumes (conventional cubic cell, 8 atoms,
+    # so the supercell box is cubic and its edge scales cleanly with S)
+    unit_cells = [
+        bulk("Ge", crystalstructure="diamond", a=alat * (1 + r), cubic=True)
+        for r in lat_rates
+    ]
     volumes = [float(uc.get_volume()) for uc in unit_cells]
 
     # --- Static energies (batched, one mlp call) ---
@@ -290,7 +295,7 @@ def run(
     entropy_list: list[list[float]] = []
     temps = None
 
-    for i, (rate, uc) in enumerate(zip(rates, unit_cells)):
+    for i, (rate, uc) in enumerate(zip(lat_rates, unit_cells)):
         vol_dir = outdir / f"vol_{i:02d}"
         vol_dir.mkdir(exist_ok=True)
         li = alat * (1 + rate)
@@ -302,6 +307,10 @@ def run(
         phonon = Phonopy(
             unitcell,
             supercell_matrix=[[S, 0, 0], [0, S, 0], [0, 0, S]],
+            primitive_matrix=[[0, 0.5, 0.5],
+                                [0.5, 0, 0.5],
+                                [0.5, 0.5, 0]],
+            calculator='lammps'
         )
         phonon.generate_displacements(distance=displacement)
         supercells = phonon.supercells_with_displacements
@@ -317,7 +326,7 @@ def run(
             if not out_cfg.exists():
                 print(f"  Error: no EFS output for vol {i:02d}.", file=sys.stderr)
                 sys.exit(1)
-            print(f"  vol {i:02d} (a={li:.4f} A): forces computed")
+            print(f"  vol {i:02d} (a={li:.4f} A) (vol={li**3:4f}): forces computed")
 
         forces_list = _parse_forces_from_cfg(out_cfg)
         if len(forces_list) != len(supercells):
@@ -337,6 +346,7 @@ def run(
 
         if temps is None:
             temps = np.array(tp["temperatures"])
+            n_atoms_prim = len(phonon.primitive)
 
         fe_list.append(list(tp["free_energy"]))       # kJ/mol
         cv_list.append(list(tp["heat_capacity"]))     # J/K/mol
@@ -344,13 +354,15 @@ def run(
 
     print(f"  All {n_volumes} volumes done.")
 
-    # Normalize thermal properties to per atom (phonopy gives per unit cell;
-    # our primitive cell has 2 Ge atoms, so divide Cv/entropy/fe by 2 for
-    # per-atom molar quantities that match the experimental convention).
+    # Normalize to per-atom molar quantities matching the experimental/DFT-
+    # reference convention. Static energies/volumes come from the conventional
+    # cubic cell (8 atoms), but phonopy's thermal properties are reported per
+    # mole of the *primitive* cell it reduced to via primitive_matrix (2 atoms
+    # for diamond Ge) -- these two must be normalized by different atom counts.
     n_atoms_per_cell = len(unit_cells[0])
-    fe_list = [[v / n_atoms_per_cell for v in row] for row in fe_list]
-    cv_list = [[v / n_atoms_per_cell for v in row] for row in cv_list]
-    entropy_list = [[v / n_atoms_per_cell for v in row] for row in entropy_list]
+    fe_list = [[v / n_atoms_prim for v in row] for row in fe_list]
+    cv_list = [[v / n_atoms_prim for v in row] for row in cv_list]
+    entropy_list = [[v / n_atoms_prim for v in row] for row in entropy_list]
     energies = [e / n_atoms_per_cell for e in energies]
     volumes = [v / n_atoms_per_cell for v in volumes]
 
@@ -371,11 +383,31 @@ def run(
     te_file = outdir / "thermal_expansion.dat"
     cp_file = outdir / "heat_capacity.dat"
     bm_file = outdir / "bulk_modulus.dat"
+    ev_file = outdir / "entropy-volume.dat"
+    cvv_file = outdir / "Cv-volume.dat"
+    dsdvt_file = outdir / "dsdv-temperature.dat"
 
     qha.write_thermal_expansion(str(te_file))
-    qha.write_heat_capacity_P_polyfit(str(cp_file))
+    qha.write_heat_capacity_P_polyfit(
+        str(cp_file),
+        filename_ev=str(ev_file),
+        filename_cvv=str(cvv_file),
+        filename_dsdvt=str(dsdvt_file),
+    )
     qha.write_bulk_modulus_temperature(str(bm_file))
-    print(f"  Written: {te_file.name}, {cp_file.name}, {bm_file.name}")
+    print(f"  Written: {te_file.name}, {cp_file.name}, {bm_file.name}, "
+          f"{ev_file.name}, {cvv_file.name}, {dsdvt_file.name}")
+
+    fe_volume_file = outdir / "free_energy-volume.png"
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        qha.plot_helmholtz_volume().savefig(str(fe_volume_file))
+        plt.close("all")
+        print(f"  Written: {fe_volume_file.name}")
+    except ImportError:
+        print("  matplotlib not available — skipping free energy-volume plot")
 
     # --- Parse output files ---
     def _read_dat(path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -425,14 +457,14 @@ def main() -> None:
     parser.add_argument("--pot", required=True, help="Path to potential (.almtp)")
     parser.add_argument("--alat", type=float, default=5.76,
                         help="Equilibrium lattice constant in A (default: 5.76)")
-    parser.add_argument("--supercell", type=int, default=2,
-                        help="Primitive supercell size S for force constant calc (default: 2)")
+    parser.add_argument("--supercell", type=int, default=1,
+                        help="Primitive supercell size S for force constant calc (default: 1)")
     parser.add_argument("--n-volumes", type=int, default=11,
                         help="Number of volume grid points for QHA (default: 11)")
-    parser.add_argument("--vol-range-start", type=float, default=-0.05,
-                        help="Min linear lattice scale rate (default: -0.05 = -5%%)")
-    parser.add_argument("--vol-range-end", type=float, default=0.05,
-                        help="Max linear lattice scale rate (default: +0.05 = +5%%)")
+    parser.add_argument("--vol-range-start", type=float, default=-0.15,
+                        help="Min volume scale rate (default: -0.15 = -15%%)")
+    parser.add_argument("--vol-range-end", type=float, default=0.15,
+                        help="Max volume scale rate (default: +0.15 = +15%%)")
     parser.add_argument("--t-max", type=float, default=1000.0,
                         help="Max temperature in K (default: 1000)")
     parser.add_argument("--t-step", type=int, default=10,

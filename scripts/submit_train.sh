@@ -4,7 +4,7 @@
 #SBATCH --partition=test
 #SBATCH --time=01:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks=10
+#SBATCH --ntasks=100
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
 #SBATCH --output=logs/train.out

@@ -136,6 +136,34 @@ def _write_lammps_structure(lat_param: float, path: Path, supercell_size: int = 
     return path.resolve()
 
 
+def _system_setup_block(read_data: str | None) -> str:
+    """Return the ${SYSTEM_SETUP} block for md_nvt.in (solid template).
+
+    If read_data is given, the box comes from that LAMMPS data file and the
+    native lattice-creation commands are commented out. Otherwise the box is
+    built in-place from ${LAT_PARAM}/${SUPERCELL_SIZE} (substituted by the
+    caller's later .replace() calls) and read_data is commented out instead.
+    """
+    if read_data:
+        data_path = Path(read_data).resolve()
+        return (
+            "#variable    lat_param equal ${LAT_PARAM}   # Ge diamond cubic lattice constant (Å)\n"
+            "#lattice     diamond ${lat_param}\n"
+            "#region      box block 0 ${SUPERCELL_SIZE} 0 ${SUPERCELL_SIZE} 0 ${SUPERCELL_SIZE} units lattice\n"
+            "#create_box  1 box\n"
+            "#create_atoms 1 box\n"
+            f"read_data   {data_path}"
+        )
+    return (
+        "variable    lat_param equal ${LAT_PARAM}   # Ge diamond cubic lattice constant (Å)\n"
+        "lattice     diamond ${lat_param}\n"
+        "region      box block 0 ${SUPERCELL_SIZE} 0 ${SUPERCELL_SIZE} 0 ${SUPERCELL_SIZE} units lattice\n"
+        "create_box  1 box\n"
+        "create_atoms 1 box\n"
+        "#read_data   ${data_file}"
+    )
+
+
 def run_lammps_md(
     lammps: str,
     template: Path,
@@ -147,25 +175,26 @@ def run_lammps_md(
     lat_param: float = 5.76,
     supercell_size: int = 1,
     cubic: bool = False,
+    read_data: str | None = None,
 ) -> Path:
     """Patch the LAMMPS template and run MD from run_dir.
 
     This LAMMPS build's pair_MLIP reads settings as inline key=value args
     on the pair_style line (no separate ini file). The template uses
-    ${POT_PATH}, ${GRADE_THRESHOLD}, ${GRADE_BREAK}, and ${READ_DATA_LINE}
+    ${POT_PATH}, ${GRADE_THRESHOLD}, ${GRADE_BREAK}, and ${SYSTEM_SETUP}
     as placeholders. LAMMPS runs with cwd=run_dir so
     select:save_selected_to=preselected.cfg resolves to run_dir/preselected.cfg.
     Returns the path where MLIP writes extrapolative configs.
     """
     run_dir.mkdir(parents=True, exist_ok=True)
-    read_data_line = f"read_data   {_write_lammps_structure(lat_param, run_dir / 'structure.lammps', supercell_size, cubic)}"
+    system_setup = _system_setup_block(read_data)
     text = (
         template.read_text()
         .replace("${T_RUN}", str(T))
         .replace("${POT_PATH}", str(Path(pot_path).resolve()))
         .replace("${GRADE_THRESHOLD}", str(threshold))
         .replace("${GRADE_BREAK}", f"{(grade_break if grade_break > 0 else threshold * 5):.1f}")
-        .replace("${READ_DATA_LINE}", read_data_line)
+        .replace("${SYSTEM_SETUP}", system_setup)
         .replace("${SUPERCELL_SIZE}", str(supercell_size))
         .replace("${LAT_PARAM}", str(lat_param))
     )
@@ -216,6 +245,9 @@ def run_parallel_lammps_md(
       grade_break     : per-trajectory γ_break; set equal to grade_threshold for
                         at-most-one-config-per-trajectory behaviour on liquid runs
                         (0 → threshold × 5)
+      read_data       : solid trajectories only — path to a pre-built LAMMPS data
+                        file; if given, md_nvt.in reads it directly instead of
+                        building the box from lat_param/supercell_size/cubic
 
     Each job runs in iter_dir/md_NNN/ and writes preselected.cfg there.
     All non-empty per-trajectory preselected.cfg files are concatenated into
@@ -254,7 +286,12 @@ def run_parallel_lammps_md(
 
         template = liquid_tmpl if tmpl_type == "liquid" else solid_tmpl
 
-        read_data_line = f"read_data   {_write_lammps_structure(lat_param, md_dir / 'structure.lammps', supercell_size, cubic)}"
+        if tmpl_type == "liquid":
+            read_data_line = f"read_data   {_write_lammps_structure(lat_param, md_dir / 'structure.lammps', supercell_size, cubic)}"
+            system_setup = ""
+        else:
+            read_data_line = ""
+            system_setup = _system_setup_block(traj.get("read_data"))
 
         text = (
             template.read_text()
@@ -263,6 +300,8 @@ def run_parallel_lammps_md(
             .replace("${GRADE_THRESHOLD}", str(threshold))
             .replace("${GRADE_BREAK}", f"{grade_break_val:.1f}")
             .replace("${READ_DATA_LINE}", read_data_line)
+            .replace("${SYSTEM_SETUP}", system_setup)
+            .replace("${SUPERCELL_SIZE}", str(supercell_size))
             .replace("${LAT_PARAM}", str(lat_param))
         )
         (md_dir / "md.in").write_text(text)
@@ -418,6 +457,8 @@ def _write_vasp_input(atoms, vasp_dir: Path, vasp_settings: dict) -> None:
         lasph=vasp_settings.get("vasp_lasph", True),
         lwave=vasp_settings.get("vasp_lwave", False),
         lcharg=vasp_settings.get("vasp_lcharg", False),
+        kpar=vasp_settings.get("vasp_kpar", 4),
+        ncore=vasp_settings.get("vasp_ncore", 8),
         directory=str(vasp_dir),
     )
     if use_kspacing:
@@ -454,10 +495,12 @@ def _submit_vasp_array_and_wait(
 #SBATCH --partition={partition}
 #SBATCH --time={time_dft}
 #SBATCH --ntasks={ntasks}
-#SBATCH --output=/dev/null
-#SBATCH --error=/dev/null
+#SBATCH --output=job.out
+#SBATCH --error=job.err
 
 {setup}
+
+export OMP_NUM_THREADS=1
 
 STRUCT_DIR="{abs_iter_dir}/struct_$(printf '%03d' $SLURM_ARRAY_TASK_ID)"
 cd "$STRUCT_DIR"
@@ -485,7 +528,7 @@ cd "$STRUCT_DIR"
     job_id = result.stdout.strip().split()[-1]
     print(f"  {result.stdout.strip()}")
 
-    poll_interval = 3600  # seconds between squeue checks
+    poll_interval = 1200  # seconds between squeue checks
     while True:
         sq = subprocess.run(["squeue", "-j", job_id, "-h"], capture_output=True, text=True)
         job_alive = bool(sq.stdout.strip())
@@ -674,6 +717,7 @@ def run_dft_labeling(
     for i, atoms_orig, vasp_dir, meta in struct_info:
         try:
             atoms_out = _read_vasp_result(vasp_dir, atoms_orig)
+            atoms_out.info["config_type"] = meta.get("type", "unknown")
             labeled.append((meta.get("orig_index", str(i)), atoms_out))
         except Exception as exc:
             print(f"  WARNING: VASP failed for struct {i}: {exc} — skipping")
@@ -758,28 +802,42 @@ def _write_cfg_block(atoms, meta: dict, extra: dict | None = None) -> str:
     return "\n".join(lines)
 
 
-_STRAIN_EPS = [-0.05, -0.04, -0.03, -0.02, -0.01, +0.01, +0.02, +0.03, +0.04, +0.05]
 
+#_STRAIN_EPS = [-0.05, -0.04, -0.03, -0.02, -0.01, +0.01, +0.02, +0.03, +0.04, +0.05] #strained_dft_v1
+
+#_STRAIN_EPS = [-0.016, -0.012, -0.008, -0.004, 0.000, 0.004, 0.008, 0.012, 0.016] #strained_dft_v2
+
+#_STRAIN_EPS = [-0.018, -0.014, -0.006, -0.002, 0.002, 0.006, 0.014, 0.018] #strained_dft_v3
+
+_STRAIN_EPS = [-0.065, -0.055, -0.045, -0.035, -0.025, +0.025, +0.035, +0.045, +0.055, +0.065] #strained_dft_v4
 
 def _strain_atoms_blocks(atoms, meta: dict) -> list[str]:
-    """Return 30 CFG block strings (3 modes × 10 ε) for one structure."""
+    """Return CFG block strings: 1 equilibrium + 3 modes x nonzero eps values."""
     cell0 = atoms.get_cell().copy()
     a0    = float(np.linalg.norm(cell0[0]))
     blocks: list[str] = []
+
+    # equilibrium (eps=0) reference — generated once, not per-mode
+    #at = atoms.copy()
+    #blocks.append(_write_cfg_block(at, meta, {"strain_type": "equilibrium", "strain_eps": "0.000"}))
+
     for eps in _STRAIN_EPS:
+        #if eps == 0.0:
+            #continue  # already added above
         # 1. Hydrostatic: scale all vectors uniformly
         hc = (1.0 + eps) * cell0
         at = atoms.copy(); at.set_cell(hc, scale_atoms=True)
-        blocks.append(_write_cfg_block(at, meta, {"strain_type": "hydrostatic", "strain_eps": f"{eps:.2f}"}))
+        blocks.append(_write_cfg_block(at, meta, {"strain_type": "hydrostatic", "strain_eps": f"{eps:.3f}"}))
         # 2. Uniaxial [100]: scale only the a vector
         uc = cell0.copy(); uc[0] = (1.0 + eps) * cell0[0]
         at = atoms.copy(); at.set_cell(uc, scale_atoms=True)
-        blocks.append(_write_cfg_block(at, meta, {"strain_type": "uniaxial_100", "strain_eps": f"{eps:.2f}"}))
+        blocks.append(_write_cfg_block(at, meta, {"strain_type": "uniaxial_100", "strain_eps": f"{eps:.3f}"}))
         # 3. Shear: add ε×|a₀| to the y-component of the a vector
         sc = cell0.copy(); sc[0, 1] += eps * a0
         at = atoms.copy(); at.set_cell(sc, scale_atoms=True)
-        blocks.append(_write_cfg_block(at, meta, {"strain_type": "shear", "strain_eps": f"{eps:.2f}"}))
+        blocks.append(_write_cfg_block(at, meta, {"strain_type": "shear", "strain_eps": f"{eps:.3f}"}))
     return blocks
+
 
 
 def _apply_strain(selected_cfg: Path, iter_dir: Path) -> Path:
@@ -799,23 +857,105 @@ def _apply_strain(selected_cfg: Path, iter_dir: Path) -> Path:
 
 
 def _make_no_al_strained_cfg(no_al_trajs: list[dict], out_path: Path, lat_param: float) -> None:
-    """Build a 1×1×1 diamond cubic cell and apply strain; write to out_path.
+    """Build an S×S×S diamond cubic cell and apply strain; write to out_path.
 
     Constructs the conventional 8-atom Ge cubic cell using lat_param (global
-    default, or per-trajectory override via 'lat_param' key). Produces 30
+    default, or per-trajectory override via 'lat_param' key), then tiles it
+    into an S×S×S supercell ('supercell_size' key, default 1). Produces 30
     strained variants per no_al trajectory entry.
     """
     from ase.build import bulk
     blocks: list[str] = []
     for i, traj in enumerate(no_al_trajs):
         a = float(traj.get("lat_param", lat_param))
+        S = int(traj.get("supercell_size", 1))
         atoms = bulk("Ge", "diamond", a=a, cubic=True)  # 8-atom conventional cell
+        if S > 1:
+            atoms = atoms.repeat(S)
         meta = {"type": "solid"}
         traj_blocks = _strain_atoms_blocks(atoms, meta)
         blocks.extend(traj_blocks)
-        print(f"  no_al[{i:03d}] diamond 1×1×1 a={a:.4f}Å: {len(traj_blocks)} strained configs.")
+        print(f"  no_al[{i:03d}] diamond {S}×{S}×{S} ({len(atoms)} atoms) a={a:.4f}Å: {len(traj_blocks)} strained configs.")
     out_path.write_text("\n".join(blocks) + "\n")
     print(f"  Total no_al strained: {len(blocks)} configs → {out_path}")
+
+
+# Lattice-constant rates (a_new = a*(1+r)) sampled around equilibrium for the
+# frozen-phonon force-constant probes. Range chosen from the actual thermal
+# expansion result: integrating alpha_L(T) from 0->1000 K gives only ~0.57%
+# (DFT) to ~0.99% (this project's own MTP fit) linear strain, so +/-0.03 gives
+# a comfortable ~3-5x margin over the real excursion without spending points
+# far outside the regime that matters (unlike tests/thermal_properties.py's
+# own +/-0.05 QHA-fit convention, which is deliberately wider for curvature
+# robustness rather than to match the physical excursion). Point count/spacing
+# (7, denser near 0) still differs from that script's evenly-spaced
+# --n-volumes sweep, so it remains an independent held-out check.
+_PHONON_LATTICE_RATES = [-0.03, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03]
+# Displacement distance (Å) — deliberately different from the 0.01 Å default
+# used by tests/phonon_dispersion.py / tests/thermal_properties.py, for the
+# same held-out-evaluation reason.
+_PHONON_DISPLACEMENT = 0.02
+
+
+def _make_no_al_phonon_cfg(no_al_trajs: list[dict], out_path: Path, lat_param: float) -> None:
+    """Build symmetry-complete frozen-phonon displacements at several volumes.
+
+    For each 'phonon' no_al trajectory entry, builds a Ge diamond cell (using
+    lat_param, or a per-trajectory 'lat_param' override), scales it to each
+    lattice constant in _PHONON_LATTICE_RATES, tiles it into an S×S×S supercell
+    ('supercell_size', default 2), and uses phonopy to generate the minimal
+    symmetry-inequivalent displaced structure(s) (distance=_PHONON_DISPLACEMENT)
+    at that volume. These are single-point force-constant probes — IBRION=-1
+    (no ionic relaxation) is physically correct here, unlike the shear-strain
+    case, since no external strain is imposed beyond the volume itself.
+    """
+    from ase import Atoms
+    from ase.build import bulk
+    from phonopy import Phonopy
+    from phonopy.structure.atoms import PhonopyAtoms
+
+    def _ase_to_phonopy(atoms):
+        return PhonopyAtoms(
+            symbols=list(atoms.get_chemical_symbols()),
+            cell=atoms.get_cell().array.copy(),
+            scaled_positions=atoms.get_scaled_positions(),
+        )
+
+    def _phonopy_to_ase(ph_atoms):
+        return Atoms(
+            symbols=list(ph_atoms.symbols),
+            cell=ph_atoms.cell.copy(),
+            positions=ph_atoms.positions.copy(),
+            pbc=True,
+        )
+
+    blocks: list[str] = []
+    for i, traj in enumerate(no_al_trajs):
+        a = float(traj.get("lat_param", lat_param))
+        S = int(traj.get("supercell_size", 3))
+        cubic = bool(traj.get("cubic", False))
+        unitcell = bulk("Ge", "diamond", a=a, cubic=cubic)
+        meta = {"type": "phonon_fc"}
+
+        n_this_traj = 0
+        for rate in _PHONON_LATTICE_RATES:
+            scaled = unitcell.copy()
+            scaled.set_cell(scaled.get_cell() * (1.0 + rate), scale_atoms=True)
+
+            phonon = Phonopy(
+                _ase_to_phonopy(scaled),
+                supercell_matrix=[[S, 0, 0], [0, S, 0], [0, 0, S]],
+            )
+            phonon.generate_displacements(distance=_PHONON_DISPLACEMENT)
+            for sc in phonon.supercells_with_displacements:
+                blocks.append(_write_cfg_block(
+                    _phonopy_to_ase(sc), meta, {"lattice_rate": f"{rate:+.4f}"}
+                ))
+                n_this_traj += 1
+        print(f"  no_al[{i:03d}] phonon a={a:.4f}Å S={S}: "
+              f"{n_this_traj} displaced configs across {len(_PHONON_LATTICE_RATES)} volumes.")
+    out_path.write_text("\n".join(blocks) + "\n")
+    print(f"  Total no_al phonon: {len(blocks)} configs → {out_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -893,6 +1033,8 @@ def run_active_learning(
     ))
     al_trajs    = [t for t in trajectories if not t.get("no_al", False)] if trajectories else []
     no_al_trajs = [t for t in trajectories if     t.get("no_al", False)] if trajectories else []
+    no_al_strain_trajs = [t for t in no_al_trajs if t.get("template", "solid") != "phonon"]
+    no_al_phonon_trajs = [t for t in no_al_trajs if t.get("template", "solid") == "phonon"]
 
     for iteration in range(1, max_iter + 1):
         print(f"\n{'='*60}")
@@ -902,6 +1044,12 @@ def run_active_learning(
         iter_subdir = Path(label) / f"iter_{iteration:03d}" if label else Path(f"iter_{iteration:03d}")
         iter_dir = al_outdir / iter_subdir
         iter_dir.mkdir(parents=True, exist_ok=True)
+
+        iteration_marker = iter_dir / ".iteration_complete"
+        if iteration_marker.exists():
+            print(f"\nIteration {iteration} already complete (DFT-labelled data already merged "
+                  f"into training set) — skipping.")
+            continue
 
         # Step A: LAMMPS MD with MLIP selection enabled (skipped for no_al-only runs)
         preselected = iter_dir / "preselected.cfg"
@@ -988,15 +1136,26 @@ def run_active_learning(
                 print(f"  {n_to_strain} structure(s) strained × 30, {n_direct} passed through directly.")
             n_for_dft = _count_cfg(cfg_for_dft)
 
-        # Step B.6: no_al trajectories — load structure, strain directly, merge
+        # Step B.6: no_al trajectories — load structure, strain/displace directly, merge
         if no_al_trajs:
             no_al_cfg = iter_dir / "no_al_strained.cfg"
             if no_al_cfg.exists():
                 print(f"\nStep B.6 — skipping (no_al_strained.cfg already exists).")
             else:
-                print(f"\nStep B.6 — straining {len(no_al_trajs)} no_al structure(s) directly...")
-                sys.stdout.flush()
-                _make_no_al_strained_cfg(no_al_trajs, no_al_cfg, lat_param)
+                parts: list[str] = []
+                if no_al_strain_trajs:
+                    print(f"\nStep B.6 — straining {len(no_al_strain_trajs)} no_al structure(s) directly...")
+                    sys.stdout.flush()
+                    strain_path = iter_dir / "no_al_strained_only.cfg"
+                    _make_no_al_strained_cfg(no_al_strain_trajs, strain_path, lat_param)
+                    parts.append(strain_path.read_text())
+                if no_al_phonon_trajs:
+                    print(f"\nStep B.6 — generating {len(no_al_phonon_trajs)} no_al phonon structure(s) directly...")
+                    sys.stdout.flush()
+                    phonon_path = iter_dir / "no_al_phonon_only.cfg"
+                    _make_no_al_phonon_cfg(no_al_phonon_trajs, phonon_path, lat_param)
+                    parts.append(phonon_path.read_text())
+                no_al_cfg.write_text("".join(parts))
             if cfg_for_dft is not None and _count_cfg(cfg_for_dft) > 0:
                 merged = iter_dir / "merged_for_dft.cfg"
                 if not merged.exists():
@@ -1064,6 +1223,8 @@ def run_active_learning(
             print(err_result.stdout or err_result.stderr, end="")
             print(f"  Errors written to {err_out}")
             sys.stdout.flush()
+
+        iteration_marker.touch()
 
         if not al_trajs:
             print("\nno_al-only run: stopping after one iteration.")

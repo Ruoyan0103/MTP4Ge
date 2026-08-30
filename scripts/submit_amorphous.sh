@@ -25,7 +25,7 @@ set -euo pipefail
 REPO_ROOT="/scratch/project_2012355/Paper_3/MTP4Ge"
 cd "$REPO_ROOT"
 
-POT="${1:-results/potentials/pot_al.almtp}"
+POT="${1:-/scratch/project_2012355/Paper_3/00-subsets/07-short_range/pot24_08_26.almtp}"
 shift || true
 
 # --- Environment ---

@@ -146,6 +146,7 @@ def run(
         eos_txt = outdir / "eos_fit.txt"
         with open(eos_txt, "w") as f:
             f.write("Birch-Murnaghan 3rd-order EOS fit\n")
+            f.write(f"Potential: {pot}\n")
             f.write(f"E0  = {E0:.6f} eV\n")
             f.write(f"V0  = {V0:.4f} Å³  ({V0/n_atoms:.4f} Å³/atom)\n")
             if a0:

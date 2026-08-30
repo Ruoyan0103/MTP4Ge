@@ -1,9 +1,9 @@
 """Liquid Ge radial distribution function via LAMMPS NVT→NPT→NVT MD.
 
-Two-stage protocol:
+Three-stage protocol:
   1. NVT pre-heat at the liquid temperature — melt gently at constant volume
-  2. NPT equilibration at the liquid temperature / 1 bar — relax to true density
-  2. NVT production at the equilibrated density — collect dump frames
+  2. NPT equilibration at the liquid temperature / 0 bar — relax to true density
+  3. NVT production at the equilibrated density — collect dump frames
 
 Starting from diamond-cubic Ge at the specified lattice constant.
 The NPT barostat allows the system to melt and find its natural liquid density.
@@ -45,10 +45,10 @@ def write_liquid_input(
     ny: int = 10,
     nz: int = 10,
     a0: float = 5.5,
-    T: float = 1500.0,
-    steps_nvt_pre: int = 10000,
-    steps_npt: int = 200000,
-    steps_nvt: int = 500,
+    T: float = 2000.0,
+    steps_nvt_pre: int = 2_000,
+    steps_npt: int = 20_000,
+    steps_nvt: int = 2_000,
     seed: int = 12345,
     dump_every: int = 100,
 ) -> int:
@@ -71,32 +71,43 @@ create_box  1 box
 create_atoms 1 box
 mass        1 {_GE_MASS_AMU}
 
+#pair_style hybrid/overlay table linear 10000 mlip load_from={pot_path}
+#pair_coeff * * table /scratch/project_2012355/Paper_3/00-subsets/07-short_range/01-SW_joining/tables/nlh-MTP.table NLH_GE
+#pair_coeff * * mlip
+
 pair_style  mlip load_from={pot_path}
 pair_coeff  * *
 
 neighbor    2.0 bin
 neigh_modify delay 0 every 1 check yes
-timestep    0.001   # ps
+timestep    0.0005   # ps  (0.5 fs)
 thermo      100
 thermo_style custom step time temp press vol etotal
 
 # Stage 0: NVT pre-heat at {T:.0f} K — melt gently before barostat
 velocity    all create {T} {seed} mom yes rot yes
 fix         nvt_heat all nvt temp {T} {T} 0.1
+dump        dmp all custom {dump_every} stage0.lammpstrj id type x y z
+dump_modify dmp sort id
 run         {steps_nvt_pre}
 unfix       nvt_heat
+undump      dmp
 
-# Stage 1: NPT equilibration at {T:.0f} K, 1 bar
-fix         npt_eq all npt temp {T} {T} 0.1 iso 1.0 1.0 10.0
+# Stage 1: NPT equilibration at {T:.0f} K, 0 bar
+fix         npt_eq all npt temp {T} {T} $(100.0*dt) iso 0.0 0.0 $(1000.0*dt)
+dump        dmp all custom {dump_every} stage1.lammpstrj id type x y z
+dump_modify dmp sort id
 run         {steps_npt}
 unfix       npt_eq
+undump      dmp    
 
 # Stage 2: NVT production at {T:.0f} K
 fix         nvt_prod all nvt temp {T} {T} 0.1
-dump        dmp all custom {dump_every} dump.lammpstrj id type x y z
+dump        dmp all custom {dump_every} stage2.lammpstrj id type x y z
 dump_modify dmp sort id
 run         {steps_nvt}
 unfix       nvt_prod
+undump      dmp
 
 write_data  final.lammps
 """
@@ -168,7 +179,7 @@ def run(
     outdir.mkdir(parents=True, exist_ok=True)
 
     n_atoms = 8 * nx * ny * nz
-    total_time_ps = (steps_nvt_pre + steps_npt + steps_nvt) * 0.001
+    total_time_ps = (steps_nvt_pre + steps_npt + steps_nvt) * 0.0005
 
     print(f"  Liquid Ge at {T:.0f} K  |  {n_atoms} atoms  "
           f"({nx}x{ny}x{nz} diamond cells, a0={a0} A)")
@@ -178,31 +189,34 @@ def run(
     workdir = outdir / "lammps_run"
     workdir.mkdir(exist_ok=True)
 
-    pot_abs = str(Path(pot).resolve())
-    dump_every = 100  # per spec: dump every 100 steps during NVT
+    dump = workdir / "stage2.lammpstrj"
+    if dump.exists():
+        print(f"  LAMMPS dump is found at {dump}, skip lammps simulation, plot rdf directly")
+    else:
+        pot_abs = str(Path(pot).resolve())
+        dump_every = 100  # per spec: dump every 100 steps during NVT
 
-    n_atoms_written = write_liquid_input(
-        workdir, pot_abs,
-        nx=nx, ny=ny, nz=nz, a0=a0,
-        T=T, steps_nvt_pre=steps_nvt_pre, steps_npt=steps_npt, steps_nvt=steps_nvt,
-        dump_every=dump_every,
-    )
-    assert n_atoms_written == n_atoms
+        n_atoms_written = write_liquid_input(
+            workdir, pot_abs,
+            nx=nx, ny=ny, nz=nz, a0=a0,
+            T=T, steps_nvt_pre=steps_nvt_pre, steps_npt=steps_npt, steps_nvt=steps_nvt,
+            dump_every=dump_every,
+        )
+        assert n_atoms_written == n_atoms
 
-    # Run LAMMPS
-    print("  Running LAMMPS ...")
-    lmp_cmd = lammps.split() + ["-in", "in.liquid", "-log", "liquid.log"]
-    result = subprocess.run(
-        lmp_cmd, cwd=workdir, capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        print("  LAMMPS stderr (last 500 chars):")
-        print(result.stderr[-500:])
-        raise RuntimeError("LAMMPS run failed")
+        # Run LAMMPS
+        print("  Running LAMMPS ...")
+        lmp_cmd = lammps.split() + ["-in", "in.liquid", "-log", "liquid.log"]
+        result = subprocess.run(
+            lmp_cmd, cwd=workdir, capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print("  LAMMPS stderr (last 500 chars):")
+            print(result.stderr[-500:])
+            raise RuntimeError("LAMMPS run failed")
 
-    dump = workdir / "dump.lammpstrj"
-    if not dump.exists():
-        raise RuntimeError(f"LAMMPS dump not found at {dump}")
+        if not dump.exists():
+            raise RuntimeError(f"LAMMPS dump not found at {dump}")
 
     # Compute RDF
     print("  Computing RDF ...")
@@ -308,36 +322,36 @@ def main() -> None:
         help="Path to MTP potential file (.almtp)"
     )
     parser.add_argument(
-        "--nx", type=int, default=3,
+        "--nx", type=int, default=10,
         help="Number of unit cells in x direction (default: 10)"
     )
     parser.add_argument(
-        "--ny", type=int, default=3,
+        "--ny", type=int, default=10,
         help="Number of unit cells in y direction (default: 10)"
     )
     parser.add_argument(
-        "--nz", type=int, default=3,
+        "--nz", type=int, default=10,
         help="Number of unit cells in z direction (default: 10)"
     )
     parser.add_argument(
-        "--a0", type=float, default=5.6,
-        help="Lattice constant for diamond-cubic Ge in A (default: 5.658)"
+        "--a0", type=float, default=5.76,
+        help="Lattice constant for diamond-cubic Ge in A (default: 5.76)"
     )
     parser.add_argument(
-        "--T", type=float, default=1300.0,
-        help="Liquid temperature in K (default: 1500)"
+        "--T", type=float, default=2000.0,
+        help="Liquid temperature in K (default: 2000)"
     )
     parser.add_argument(
-        "--steps-nvt-pre", type=int, default=1000,
-        help="NVT pre-heat steps before NPT (default: 1000 = 1 ps)"
+        "--steps-nvt-pre", type=int, default=2_000,
+        help="NVT pre-heat steps before NPT (default: 1 ps)"
     )
     parser.add_argument(
         "--steps-npt", type=int, default=20000,
-        help="NPT equilibration steps (default: 10000 = 10 ps)"
+        help="NPT equilibration steps (default: 10 ps)"
     )
     parser.add_argument(
-        "--steps-nvt", type=int, default=500,
-        help="NVT production steps (default: 500 = 0.5 ps)"
+        "--steps-nvt", type=int, default=2_000,
+        help="NVT production steps (default: 1 ps)"
     )
     parser.add_argument(
         "--lammps", default=LAMMPS_DEFAULT,

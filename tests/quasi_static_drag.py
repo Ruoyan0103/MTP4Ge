@@ -12,7 +12,7 @@ Expected results:
 Usage:
     python tests/quasi_static_drag.py --pot results/potentials/pot.almtp
     python tests/quasi_static_drag.py --pot results/potentials/pot.almtp \\
-        --a0 5.779 --n-steps 80 --step-size 0.05
+        --a0 5.76 --n-steps 80 --step-size 0.05
 """
 
 import argparse
@@ -49,6 +49,12 @@ def _dft_max_disp(label: str):
         return None
     data = np.loadtxt(path, delimiter=",")
     return float(data[-1, 0])
+
+# Minimum allowed interatomic distance (A) during a drag step; guards only
+# against true numerical singularities. The DFT reference dips as low as
+# ~1.44 A near the end of each direction, so this must stay well below that
+# or the MTP scan gets truncated far short of the DFT drag distance.
+MIN_SAFE_DIST = 1.2
 
 # Drag directions: label → fractional Miller index (will be normalised)
 DRAG_DIRECTIONS = {
@@ -172,11 +178,14 @@ def drag_scan(
     effective_max = dft_max_disp if dft_max_disp is not None else max_disp
     if dft_max_disp is None:
         effective_max = min(effective_max, n_steps * step_size)
-    actual_steps = max(2, int(effective_max / step_size))
-    print(f"    [{label}] {actual_steps} steps x {step_size} A = {actual_steps*step_size:.2f} A")
+
+    disp_vals_all = np.arange(0.0, effective_max, step_size)
+    if disp_vals_all.size == 0 or not np.isclose(disp_vals_all[-1], effective_max):
+        disp_vals_all = np.append(disp_vals_all, effective_max)
+    print(f"    [{label}] {len(disp_vals_all)} steps x {step_size} A "
+          f"(nominal) = {disp_vals_all[-1]:.4f} A")
 
     configs = []
-    disp_vals_all = np.arange(actual_steps) * step_size
     cell_inv = np.linalg.inv(cell)
 
     safe_disp_vals = []
@@ -187,8 +196,8 @@ def drag_scan(
         frac = diff @ cell_inv
         frac -= np.round(frac)
         min_dist = np.linalg.norm(frac @ cell, axis=1).min()
-        if min_dist < 2:
-            print(f"    [{label}] skipping d={d:.3f} A: min dist {min_dist:.3f} A < 2 A")
+        if min_dist < MIN_SAFE_DIST:
+            print(f"    [{label}] skipping d={d:.3f} A: min dist {min_dist:.3f} A < {MIN_SAFE_DIST} A")
             continue
         configs.append((cell, new_pos, types))
         safe_disp_vals.append(d)
@@ -282,17 +291,17 @@ def run(
             ax_f = axes[1, col]
 
             # --- Energy ---
-            ax_e.plot(disp, dE * 1000, '-o', color="tab:blue", lw=1.5, label="MTP")
+            ax_e.plot(disp, dE, '-o', color="tab:blue", lw=1.5, label="MTP")
             ax_e.axhline(0, color="gray", lw=0.8, ls="--")
 
             dft_path = DFT_REF_MAP.get(label)
             if dft_path:
                 rd = load_ref_dft(dft_path)
                 if rd[0] is not None:
-                    ax_e.plot(rd[0], rd[1] * 1000, "s", color="black", ms=3, 
+                    ax_e.plot(rd[0], rd[1], "s", color="black", ms=3,
                               alpha=0.6, label="DFT", zorder=0)
 
-            ax_e.set_ylabel("dE (meV)" if col == 0 else "")
+            ax_e.set_ylabel("dE (eV)" if col == 0 else "")
             ax_e.set_title(label, fontsize=11)
             ax_e.set_xlabel("")
             ax_e.legend(fontsize=7, markerscale=0.8)
@@ -329,8 +338,8 @@ def main() -> None:
         description="Quasi-static drag test for Ge MTP potential"
     )
     parser.add_argument("--pot", required=True, help="Path to potential (.almtp)")
-    parser.add_argument("--a0", type=float, default=5.779,
-                        help="Lattice constant Å (default: 5.779)")
+    parser.add_argument("--a0", type=float, default=5.76,
+                        help="Lattice constant Å (default: 5.76)")
     parser.add_argument("--n-steps", type=int, default=15,
                         help="Number of drag steps per direction (default: 15)")
     parser.add_argument("--step-size", type=float, default=0.3,

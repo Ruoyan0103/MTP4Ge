@@ -1,11 +1,13 @@
 # LAMMPS NVT molecular dynamics template for liquid Ge
-# Placeholders filled at runtime by src/md_test.py and src/active_learning.py:
+# Placeholders filled at runtime by src/active_learning.py:
 #   ${T_RUN}           → temperature in Kelvin
 #   ${LAT_PARAM}       → diamond cubic lattice constant (Å); set lat_param in active_learning.yaml
 #   ${SUPERCELL_SIZE}  → supercell repeat count (e.g. 2 → 2×2×2 = 64 atoms)
 #   ${POT_PATH}        → absolute path to pot.almtp
 #   ${GRADE_THRESHOLD} → γ_select
 #   ${GRADE_BREAK}     → γ_break (set equal to γ_select for selecting one config per trajectory)
+#   SYSTEM_SETUP placeholder → either lattice/create_atoms (default) or read_data
+#                        (when a trajectory sets 'read_data: <path>'), see active_learning.py
 
 #===================== Simulation Parameters =======================
 variable T          equal ${T_RUN}
@@ -17,11 +19,7 @@ units       metal
 boundary    p p p
 atom_style  atomic
 
-variable    lat_param equal ${LAT_PARAM}   # Ge diamond cubic lattice constant (Å)
-lattice     diamond ${lat_param}
-region      box block 0 ${SUPERCELL_SIZE} 0 ${SUPERCELL_SIZE} 0 ${SUPERCELL_SIZE} units lattice
-create_box  1 box
-create_atoms 1 box
+${SYSTEM_SETUP}
 mass        1 72.630              # Ge atomic mass (amu)
 
 #===================== Potential ===================================

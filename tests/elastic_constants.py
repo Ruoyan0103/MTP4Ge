@@ -20,6 +20,9 @@ Usage:
 
 import argparse
 import re
+import shlex
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -30,9 +33,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from utils import calc_efs, load_structure, write_bare_cfg
 
 DEFAULT_TRAIN_CONFIG = "config/training.yaml"
+DEFAULT_AL_CONFIG = "config/active_learning.yaml"
 EV_A3_TO_GPA = 160.21766   # 1 eV/Å³ = 160.21766 GPa
 
 REF_DIR = Path(__file__).parent / "reference"
+LAMMPS_ELASTIC_DIR = Path(__file__).parent / "elastic_constant"
 
 
 def _load_elastic_ref() -> dict[str, float] | None:
@@ -178,6 +183,11 @@ def compute_elastic_constants(
     C = 0.5 * (C + C.T)
     C_GPa = C * EV_A3_TO_GPA
 
+    return _moduli_from_matrix(C_GPa)
+
+
+def _moduli_from_matrix(C_GPa: np.ndarray) -> dict:
+    """Derive cubic-average elastic constants and moduli from a full 6×6 matrix [GPa]."""
     # Cubic averages (average symmetry-equivalent components)
     C11 = float(np.mean([C_GPa[0, 0], C_GPa[1, 1], C_GPa[2, 2]]))
     C12 = float(np.mean([C_GPa[0, 1], C_GPa[0, 2], C_GPa[1, 2]]))
@@ -199,6 +209,52 @@ def compute_elastic_constants(
 
 
 # ---------------------------------------------------------------------------
+# Elastic constants via LAMMPS (relaxed-ion: atoms minimize at fixed strain)
+# ---------------------------------------------------------------------------
+
+def compute_elastic_constants_lammps(lammps_cmd: str, pot: str, outdir: Path) -> dict:
+    """
+    Run the LAMMPS ELASTIC example (tests/elastic_constant/) to compute the
+    full 6×6 stiffness tensor. Unlike compute_elastic_constants, this relaxes
+    atomic positions (min_style cg) at each fixed strain before reading the
+    stress, so it reports the relaxed-ion (not clamped-ion) elastic response.
+
+    Only potential.mod is templated (${POT_PATH}, ${GRADE_THRESHOLD},
+    ${GRADE_BREAK}); init.mod, displace.mod, in.elastic are used as-is.
+    """
+    run_dir = outdir / "lammps"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    for name in ("init.mod", "displace.mod", "in.elastic"):
+        shutil.copy(LAMMPS_ELASTIC_DIR / name, run_dir / name)
+
+    potential_text = (
+        (LAMMPS_ELASTIC_DIR / "potential.mod").read_text()
+        .replace("${POT_PATH}", str(Path(pot).resolve()))
+    )
+    (run_dir / "potential.mod").write_text(potential_text)
+
+    cmd = shlex.split(lammps_cmd) + ["-in", "in.elastic", "-log", "log.lammps", "-screen", "none"]
+    print("  LAMMPS:", " ".join(cmd), f"(cwd={run_dir})")
+    result = subprocess.run(cmd, cwd=str(run_dir))
+    if result.returncode != 0:
+        raise RuntimeError(f"LAMMPS exited {result.returncode}; see {run_dir / 'log.lammps'}")
+
+    log_text = (run_dir / "log.lammps").read_text()
+    C_GPa = np.zeros((6, 6))
+    for p, q in [(1,1),(2,2),(3,3),(1,2),(1,3),(2,3),(4,4),(5,5),(6,6),
+                 (1,4),(1,5),(1,6),(2,4),(2,5),(2,6),(3,4),(3,5),(3,6),(4,5),(4,6),(5,6)]:
+        m = re.search(rf"Elastic Constant C{p}{q}all\s*=\s*([-\d.eE+]+)", log_text)
+        if not m:
+            raise RuntimeError(f"Could not find C{p}{q}all in {run_dir / 'log.lammps'}")
+        val = float(m.group(1))
+        C_GPa[p - 1, q - 1] = val
+        C_GPa[q - 1, p - 1] = val
+
+    return _moduli_from_matrix(C_GPa)
+
+
+# ---------------------------------------------------------------------------
 # Main workflow
 # ---------------------------------------------------------------------------
 
@@ -209,30 +265,38 @@ def run(
     strain_mag: float,
     mlp: str,
     lattice_const: float = 5.76,
+    method: str = "mtp",
+    lammps_cmd: str | None = None,
 ) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
 
-    if struct is None:
-        # Use 8-atom conventional cubic cell so Cartesian x/y/z align with [100]/[010]/[001]
-        from ase.build import bulk
-        atoms = bulk("Ge", crystalstructure="diamond", a=lattice_const, cubic=True)
-        cell0 = atoms.get_cell().array.copy()
-        pos0  = atoms.get_positions()
-        types = [0] * len(atoms)
+    if method == "lammps":
+        print(f"  Method: LAMMPS relaxed-ion elastic constants (tests/elastic_constant/)")
+        res = compute_elastic_constants_lammps(lammps_cmd, pot, outdir)
+        method_line = "LAMMPS (relaxed-ion, tests/elastic_constant/in.elastic)"
     else:
-        cell0, pos0, types = load_structure(struct)
+        if struct is None:
+            # Use 8-atom conventional cubic cell so Cartesian x/y/z align with [100]/[010]/[001]
+            from ase.build import bulk
+            atoms = bulk("Ge", crystalstructure="diamond", a=lattice_const, cubic=True)
+            cell0 = atoms.get_cell().array.copy()
+            pos0  = atoms.get_positions()
+            types = [0] * len(atoms)
+        else:
+            cell0, pos0, types = load_structure(struct)
 
-    V0 = abs(np.linalg.det(cell0))
-    n_atoms = len(pos0)
-    a_eff = V0 ** (1.0 / 3.0) if struct is None else (V0 / n_atoms * 8) ** (1.0 / 3.0)
-    print(f"  Structure: {n_atoms} atoms  |  a = {a_eff:.4f} Å  |  V₀ = {V0:.4f} Å³  |  strain = {strain_mag}")
+        V0 = abs(np.linalg.det(cell0))
+        n_atoms = len(pos0)
+        a_eff = V0 ** (1.0 / 3.0) if struct is None else (V0 / n_atoms * 8) ** (1.0 / 3.0)
+        print(f"  Structure: {n_atoms} atoms  |  a = {a_eff:.4f} Å  |  V₀ = {V0:.4f} Å³  |  strain = {strain_mag}")
 
-    res = compute_elastic_constants(mlp, pot, cell0, pos0, types, outdir, strain_mag)
+        res = compute_elastic_constants(mlp, pot, cell0, pos0, types, outdir, strain_mag)
+        method_line = f"MTP calculate_efs (clamped-ion, finite-difference strain magnitude: {strain_mag})"
 
     out_txt = outdir / "elastic_constants.txt"
     with open(out_txt, "w") as f:
         f.write(f"Elastic constants — MTP potential: {pot}\n")
-        f.write(f"Finite-difference strain magnitude: {strain_mag}\n\n")
+        f.write(f"Method: {method_line}\n\n")
 
         f.write("--- Cubic averages (symmetry-equivalent components averaged) ---\n")
         f.write(f"C11  = {res['C11']:8.2f} GPa    (exp. Ge: ~126 GPa) (DFT. Ge: ~105 GPa)\n")
@@ -297,12 +361,25 @@ def main() -> None:
                         help="Training YAML config (provides mlp_binary)")
     parser.add_argument("--mlp",    default=None,
                         help="Override mlp binary path")
+    parser.add_argument("--method", choices=["mtp", "lammps"], default="lammps",
+                        help="'mtp' (default): clamped-ion, mlp calculate_efs finite differences. "
+                             "'lammps': relaxed-ion, runs tests/elastic_constant/in.elastic "
+                             "(atoms minimized at each fixed strain).")
+    parser.add_argument("--al-config", default=DEFAULT_AL_CONFIG,
+                        help="Active-learning YAML config (provides lammps_binary; --method lammps only)")
+    parser.add_argument("--lammps", default=None,
+                        help="Override LAMMPS command (--method lammps only), e.g. 'srun /path/to/lmp_mpi'")
     args = parser.parse_args()
 
     mlp = args.mlp
     if mlp is None:
         with open(args.config) as f:
             mlp = yaml.safe_load(f)["mlp_binary"]
+
+    lammps_cmd = args.lammps
+    if args.method == "lammps" and lammps_cmd is None:
+        with open(args.al_config) as f:
+            lammps_cmd = yaml.safe_load(f)["lammps_binary"]
 
     run(
         pot=args.pot,
@@ -311,6 +388,8 @@ def main() -> None:
         strain_mag=args.strain,
         mlp=mlp,
         lattice_const=args.lattice_constant,
+        method=args.method,
+        lammps_cmd=lammps_cmd,
     )
 
 

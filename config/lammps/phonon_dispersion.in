@@ -1,0 +1,27 @@
+# LAMMPS single-point force evaluation for phonon dispersion (phonopy displacements).
+# One displaced supercell per run; forces read back from the dump file.
+# Placeholders filled at runtime by tests/phonon_dispersion.py:
+#   ${STRUCT_FILE} → displaced supercell, LAMMPS data file (atom_style atomic)
+#   ${POT_PATH}    → absolute path to pot.almtp
+#   ${MASS}        → atomic mass (amu); unused by a run-0 force evaluation but
+#                    required by LAMMPS to accept the data file
+
+units       metal
+boundary    p p p
+atom_style  atomic
+
+read_data   ${STRUCT_FILE}
+
+mass        1 ${MASS}
+
+pair_style  mlip load_from=${POT_PATH} select=FALSE
+pair_coeff  * *
+
+neighbor    2.0 bin
+neigh_modify delay 0 every 1 check yes
+
+dump        forces all custom 1 force.dump id type x y z fx fy fz
+dump_modify forces format line "%d %d %20.10f %20.10f %20.10f %20.10f %20.10f %20.10f"
+dump_modify forces sort id
+
+run         0

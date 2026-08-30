@@ -1,0 +1,36 @@
+SYSTEM = Ge liquid NVT
+
+# Electronic
+ENCUT  = 500
+PREC   = Accurate
+EDIFF  = 1E-7
+ISMEAR = 0
+SIGMA  = 0.05
+GGA    = PE
+
+# AIMD
+IBRION = 0
+NSW    = 100
+POTIM  = 1.0
+NELM   = 100
+
+# NVT (Nosé-Hoover thermostat)
+MDALGO = 2
+SMASS  = 0
+TEBEG  = {temperature}
+TEEND  = {temperature}
+
+# Keep the cell fixed
+ISIF   = 2
+
+# Output
+LWAVE  = .FALSE.
+LCHARG = .FALSE.
+
+KSPACING = 0.15
+KGAMMA   = .TRUE.
+LASPH = .TRUE.
+
+NPAR = 4
+NCORE = 8
+ISYM = 0

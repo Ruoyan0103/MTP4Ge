@@ -1,8 +1,13 @@
 # Active Learning Configuration
 
-init_train_cfg: data/train-2026-06-26.cfg # base training set copied into the dated train file on first AL run
-init_test_cfg: data/test-2026-06-26.cfg   # base test set copied into the dated test file on first AL run
-init_train_pot: results/potentials/pot-2026-06-26.almtp  # initial potential for Step A (iteration 1)
+#init_train_cfg: /scratch/project_2012355/Paper_3/00-subsets/05-defects/data/dataset.cfg # base training set copied into the dated train file on first AL run
+#init_test_cfg: /scratch/project_2012355/Paper_3/00-subsets/05-defects/data/dataset.cfg   # base test set copied into the dated test file on first AL run
+#init_train_pot: /scratch/project_2012355/Paper_3/00-subsets/05-defects/data/pot08.almtp  # initial potential for Step A (iteration 1)
+
+init_train_cfg: /scratch/project_2012355/Paper_3/00-subsets/00-all/seed_locked_select_add.cfg # base training set copied into the dated train file on first AL run
+init_test_cfg: /scratch/project_2012355/Paper_3/00-subsets/00-all/seed_locked_select_add.cfg # base test set copied into the dated test file on first AL run
+init_train_pot: /scratch/project_2012355/Paper_3/00-subsets/00-all/pot24_locked_select_add.almtp # initial potential for Step A (iteration 1)
+
 
 # Maximum number of active learning iterations
 max_iterations: 200
@@ -39,42 +44,143 @@ lat_param: 5.76                      # default Ge diamond cubic lattice constant
 #                     (30 variants: hydrostatic × uniaxial × shear, ε ±1–5%)
 #                     before DFT labeling
 #   no_al           : True/False; when True, skip LAMMPS and select_add entirely
-#                     — build a 1×1×1 diamond cubic cell (8 atoms) from the
-#                     global lat_param (or per-entry lat_param override), apply
-#                     30 strains, and run DFT; the potential is not consulted
+#                     — build a diamond cubic cell (8 atoms, or supercell_size^3
+#                     × 8 atoms if supercell_size > 1) from the global lat_param
+#                     (or per-entry lat_param override), apply 30 strains, and
+#                     run DFT; the potential is not consulted
 #
 # Liquid lat_param values derived from ρ(T) = −4.42×10⁻⁴·T + 6.17 g/cm³. a = (8·M / (Nₐ · ρ))^(1/3) × 10⁸ [Å] {https://doi.org/10.1016/S0022-0248(99)00089-5}
 trajectories:
-  # added structures in 2026-06-18
+  # added structures to train pot-2026-06-18.almtp
   #- {temperature: 1000,  template: liquid,  grade_threshold: 2, grade_break: 10}
   #- {temperature: 1200,  template: liquid,  grade_threshold: 2, grade_break: 10}
   #- {temperature: 1400,  template: liquid,  grade_threshold: 2, grade_break: 10}
-  # added structures in 2026-06-18
+  # added structures to train pot-2026-06-18.almtp
 
-  #- {template: solid, no_al: true, supercell_size: 1, cubic: true}  added 
-  - {temperature: 1600,  template: liquid,  supercell_size: 4, cubic: false, coef: 0.03, grade_threshold: 2, grade_break: 10}
-  - {temperature: 1600,  template: liquid,  supercell_size: 4, cubic: false, coef: 0.05, grade_threshold: 2, grade_break: 10}
-  - {temperature: 1800,  template: liquid,  supercell_size: 4, cubic: false, coef: 0.03, grade_threshold: 2, grade_break: 10}
-  - {temperature: 1800,  template: liquid,  supercell_size: 4, cubic: false, coef: 0.05, grade_threshold: 2, grade_break: 10}
+  # more added structures to train pot-2026-06-26.almtp
+  # - {template: solid, no_al: true, supercell_size: 1, cubic: true}
+  # more added structures to train pot-2026-06-26.almtp
+
+  # more added structures to train pot-2026-06-29.almtp
+  #- {temperature: 1600,  template: liquid,  supercell_size: 4, cubic: false, coef: 0.03, grade_threshold: 2, grade_break: 10}
+  #- {temperature: 1600,  template: liquid,  supercell_size: 4, cubic: false, coef: 0.05, grade_threshold: 2, grade_break: 10}
+  #- {temperature: 1800,  template: liquid,  supercell_size: 4, cubic: false, coef: 0.03, grade_threshold: 2, grade_break: 10}
+  #- {temperature: 1800,  template: liquid,  supercell_size: 4, cubic: false, coef: 0.05, grade_threshold: 2, grade_break: 10}
+  # more added structures to train pot-2026-06-29.almtp
+
+  # added structures to train pot-2026-07-01.almtp
+  #- {temperature: 1600,  template: liquid,  supercell_size: 4, cubic: false, coef: -0.03, grade_threshold: 2, grade_break: 10}
+  #- {temperature: 1600,  template: liquid,  supercell_size: 4, cubic: false, coef: -0.05, grade_threshold: 2, grade_break: 10}
+  #- {temperature: 1800,  template: liquid,  supercell_size: 4, cubic: false, coef: -0.03, grade_threshold: 2, grade_break: 10}
+  #- {temperature: 1800,  template: liquid,  supercell_size: 4, cubic: false, coef: -0.05, grade_threshold: 2, grade_break: 10}
+  # added structures to train pot-2026-07-01.almtp
+
+# created structures to train aimd.almtp 
+# - {temperature: 1000,  template: liquid,  supercell_size: 2, cubic: true, coef: 0.02, grade_threshold: 3, grade_break: 10}
+# - {temperature: 1200,  template: liquid,  supercell_size: 2, cubic: true, coef: 0.02, grade_threshold: 3, grade_break: 10}
+# - {temperature: 1400,  template: liquid,  supercell_size: 2, cubic: true, coef: 0.02, grade_threshold: 3, grade_break: 10}
+# - {temperature: 1600,  template: liquid,  supercell_size: 2, cubic: true, coef: 0.02, grade_threshold: 3, grade_break: 10}
+# - {temperature: 1800,  template: liquid,  supercell_size: 2, cubic: true, coef: 0.02, grade_threshold: 3, grade_break: 10}
+# - {temperature: 2000,  template: liquid,  supercell_size: 2, cubic: true, coef: 0.02, grade_threshold: 3, grade_break: 10}
+# - {temperature: 2200,  template: liquid,  supercell_size: 2, cubic: true, coef: 0.02, grade_threshold: 3, grade_break: 10}
+# - {temperature: 2400,  template: liquid,  supercell_size: 2, cubic: true, coef: 0.02, grade_threshold: 3, grade_break: 10}
+# created structures to train aimd.almtp
+
+### not work
+### step 1, defective structures with pressure 
+# created structures to train defect.almtp 
+#- {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/single_point/vac/lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/single_point/1NN_vac/lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/single_point/2NN_vac/lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/single_point/H_int/lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/single_point/B_int/lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/single_point/T_int/lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/single_point/X_int/lammps.data', grade_threshold: 3, grade_break: 10}
+
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/single_point/vac/lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/single_point/1NN_vac/lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/single_point/2NN_vac/lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/single_point/H_int/lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/single_point/B_int/lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/single_point/T_int/lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/single_point/X_int/lammps.data', grade_threshold: 3, grade_break: 10}
+# created structures to train defect.almtp
+
+### step 2, defective structures with less pressure 
+# created structures to train defect_v2.almtp 
+# - {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/relax_v2/vac/lammps.data', grade_threshold: 3, grade_break: 10}
+# - {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/relax_v2/1NN_vac/lammps.data', grade_threshold: 3, grade_break: 10}
+# - {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/relax_v2/2NN_vac/lammps.data', grade_threshold: 3, grade_break: 10}
+# - {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/relax_v2/H_int/lammps.data', grade_threshold: 3, grade_break: 10}
+# - {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/relax_v2/B_int/lammps.data', grade_threshold: 3, grade_break: 10}
+# - {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/relax_v2/T_int/lammps.data', grade_threshold: 3, grade_break: 10}
+# - {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/relax_v2/X_int/lammps.data', grade_threshold: 3, grade_break: 10}
+
+# - {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/relax_v2/vac/lammps.data', grade_threshold: 3, grade_break: 10}
+# - {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/relax_v2/1NN_vac/lammps.data', grade_threshold: 3, grade_break: 10}
+# - {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/relax_v2/2NN_vac/lammps.data', grade_threshold: 3, grade_break: 10}
+# - {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/relax_v2/H_int/lammps.data', grade_threshold: 3, grade_break: 10}
+# - {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/relax_v2/B_int/lammps.data', grade_threshold: 3, grade_break: 10}
+# - {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/relax_v2/T_int/lammps.data', grade_threshold: 3, grade_break: 10}
+# - {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/relax_v2/X_int/lammps.data', grade_threshold: 3, grade_break: 10}
+# created structures to train defect_v2.almtp
+#### not work
 
 
+### created structures to train 05-defects/pot26_v4 and v5.almtp (in AL loop, it is results/potentials/pot-2026-08-05.almtp)
+### based on /scratch/project_2012355/Paper_3/00-subsets/05-defects/pot26_v3.almtp  and the corresponding dataset 05_all_v3.cfg
+#- {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/vac/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/1NN_vac/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/2NN_vac/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/H_int/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/B_int/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/T_int/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 300,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/X_int/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/vac/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/1NN_vac/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/2NN_vac/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/H_int/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/B_int/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/T_int/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/X_int/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+### created structures to train 05-defects/pot26_v4 and v5.almtp (in AL loop, it is results/potentials/pot-2026-08-05.almtp)
+
+### created structures to train 05-defects/pot26_v6.almtp 
+### based on /scratch/project_2012355/Paper_3/00-subsets/05-defects/pot26_v5.almtp  and the corresponding dataset 05_all_v5.cfg
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/MTP4Ge/results/tests/vacancy_migration/1NN/before/01_image01.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/MTP4Ge/results/tests/vacancy_migration/1NN/before/03_image03.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/MTP4Ge/results/tests/vacancy_migration/1NN/before/05_image05.data', grade_threshold: 3, grade_break: 10}
+
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/MTP4Ge/results/tests/vacancy_migration/2NN/before/01_image01.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/MTP4Ge/results/tests/vacancy_migration/2NN/before/03_image03.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/MTP4Ge/results/tests/vacancy_migration/2NN/before/05_image05.data', grade_threshold: 3, grade_break: 10}
+
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/B_int/unrelaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+#- {temperature: 100,  template: solid, read_data: '/scratch/project_2012355/Paper_3/00-subsets/05-defects/data/supercell-222/B_int/relaxed_lammps.data', grade_threshold: 3, grade_break: 10}
+### created structures to train 05-defects/pot26_v6.almtp
+
+
+### adding more elastic structures  
+- {template: solid,  cubic: true, no_al: true, strain: true, supercell_size: 2}
+### adding more elastic structures 
 
 # VASP DFT settings (Step D/E — default single-point parameters)
 max_dft_per_iter: 0          # max DFT jobs per iteration (0 = no cap)
 vasp_mode: sbatch            # 'sbatch': submit a new SLURM array job; 'inline': run in parallel using current allocation
 vasp_command: srun vasp_std  # VASP launch command inside each array task
 # SLURM settings for the VASP array job (Steps D/E, used only when vasp_mode=sbatch)
-slurm_account: project_2001625
+slurm_account: project_2012355
 slurm_partition: medium
-slurm_time_dft: "36:00:00"    # wall time per VASP array task
-slurm_ntasks_dft: 40          # MPI tasks per VASP job
+slurm_time_dft: "10:00:00"    # wall time per VASP array task
+slurm_ntasks_dft: 32          # MPI tasks per VASP job
 slurm_setup_dft: "module load gcc/11.2.0 openmpi/4.1.2 hdf5/1.10.7-mpi netlib-scalapack fftw/3.3.10-mpi-omp vasp/6.4.3"  # shell commands run before vasp_command
 vasp_encut: 500                     # ENCUT  — plane-wave cutoff (eV)
 vasp_kspacing: 0.15                 # KSPACING — k-point spacing (1/Å); remove this line to use a Gamma-only KPOINTS file instead
 vasp_sigma: 0.05                    # SIGMA  — smearing width (eV)
 vasp_ediff: 1.0e-7                  # EDIFF  — SCF convergence criterion
 vasp_gga: pbe                       # GGA    — exchange-correlation functional (ASE name; PE = PBE)
-vasp_prec: Normal                   # PREC   — precision mode
+vasp_prec: Accurate                 # PREC   — precision mode
 vasp_ibrion: -1                     # IBRION — ionic relaxation algorithm (-1 = no relaxation)
 vasp_isif: 2                        # ISIF   — stress/relaxation flag (2 = forces only)
 vasp_ismear: 0                      # ISMEAR — smearing method (0 = Gaussian)
@@ -84,6 +190,8 @@ vasp_kgamma: true                   # KGAMMA — Gamma-centred k-mesh
 vasp_lasph: true                    # LASPH  — non-spherical contributions to PAW
 vasp_lcharg: false                  # LCHARG — write CHGCAR
 vasp_lwave: false                   # LWAVE  — write WAVECAR
+vasp_kpar: 2                        # KPAR   — k-point parallelization (Found 36 irreducible k-points)
+vasp_ncore: 8                       # NCORE  — cores per band 
 vasp_pp_path: /appl/soft/phys/vasp  # parent of potpaw_PBE.64/
 vasp_pp_version: "64"               # ASE 3.28+ requires explicit version; selects potpaw_PBE.64/
 vasp_setups:                        # pseudopotential variant per element

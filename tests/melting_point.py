@@ -1,7 +1,7 @@
 """
 Melting point of diamond-cubic Ge via two-phase coexistence method.
 
-Protocol (refs [61,62]), a0 = 5.7567 A (MTP equilibrated):
+Protocol, a0 = 5.7567 A (MTP equilibrated):
   1. NPT equilibration: 500 K, 1 bar, 20 ps, dt = 2 fs
   2. Selective melting: bottom half fixed, top half NVT at 1500 K, 20 ps
   3. NpH coexistence: 1 bar, 200 ps — temperature evolves freely
@@ -13,14 +13,16 @@ Two LAMMPS runs per repeat:
   Phase 1: NPT equilibration → extract z-midpoint from log
   Phase 2: melt + NpH coexistence with hardcoded z-midpoint
 
-Usage:
+Usage (local, sequential over all repeats):
     python tests/melting_point.py --pot results/potentials/pot_al.almtp
     python tests/melting_point.py --pot results/potentials/pot_al.almtp \
         --steps-coexist 100000 --outdir results/tests/melting_point
     python tests/melting_point.py --pot results/potentials/pot_al.almtp --quick
 
-Heavy test — submit to HPC:
+Heavy test — submit to HPC as a SLURM array (one repeat per array task):
     sbatch scripts/submit_melting_point.sh results/potentials/pot_al.almtp
+    # after all array tasks finish, collect Tm across repeats:
+    python tests/melting_point.py --pot results/potentials/pot_al.almtp --aggregate
 """
 
 import argparse
@@ -73,7 +75,11 @@ create_box  1 box
 create_atoms 1 box
 mass        1 {_GE_MASS_AMU}
 
-pair_style  mlip load_from={pot_path} select=FALSE
+#pair_style hybrid/overlay table linear 10000 mlip load_from={pot_path}
+#pair_coeff * * table /scratch/project_2012355/Paper_3/00-subsets/07-short_range/01-SW_joining/tables/nlh-MTP.table NLH_GE
+#pair_coeff * * mlip
+
+pair_style  mlip load_from={pot_path}
 pair_coeff  * *
 
 neighbor    2.0 bin
@@ -82,9 +88,17 @@ timestep    0.002
 thermo      {thermo_every}
 thermo_style custom step temp press vol lx ly lz pe ke etotal
 
-# Stage 1: NPT at {T_solid} K, 1 bar, {steps_npt * 0.002:.0f} ps
+#---------------------------MINIMIZE------------------------------
+min_style      cg
+minimize       1.0e-8 1.0e-10 10000 100000
+fix            1 all box/relax iso 0.0 vmax 0.001
+minimize       1e-10 1e-10 10000 100000
+unfix          1
+run            1000
+
+# Stage 1: NPT at {T_solid} K, 0 bar, {steps_npt * 0.002:.0f} ps
 velocity    all create {T_solid} {seed} mom yes rot yes
-fix         npt_eq all npt temp {T_solid} {T_solid} 0.2 iso 1.0 1.0 2.0
+fix         npt_eq all npt temp {T_solid} {T_solid} $(100.0*dt) iso 0.0 0.0 $(1000.0*dt)
 dump        dmp1 all custom {dump_every} stage1_npt.lammpstrj id type x y z
 dump_modify dmp1 sort id
 run         {steps_npt}
@@ -137,10 +151,10 @@ group       lower region lower
 group       upper region upper
 
 # Thermostat bottom half at {T_solid} K (solid stays ordered; Stage 3 starts near Tm)
-fix         solid_thermo lower nvt temp {T_solid} {T_solid} 0.2
+fix         solid_thermo lower nvt temp {T_solid} {T_solid} $(100.0*dt) 
 
 # Thermostat top half to {T_melt} K
-fix         melt_thermo upper nvt temp {T_melt} {T_melt} 0.2
+fix         melt_thermo upper nvt temp {T_melt} {T_melt} $(100.0*dt) 
 dump        dmp2 all custom {dump_every} stage2_melt.lammpstrj id type x y z
 dump_modify dmp2 sort id
 dump        final2 all custom {steps_melt} stage2_final.lammpstrj id type x y z
@@ -160,7 +174,7 @@ region      upper delete
 # Stage 3: NpH coexistence — T evolves freely
 # ================================================================
 reset_timestep 0
-fix         nph_coexist all nph iso 1.0 1.0 2.0
+fix         nph_coexist all nph iso 0.0 0.0 $(1000.0*dt) 
 dump        dmp3 all custom {dump_every} stage3_coexist.lammpstrj id type x y z
 dump_modify dmp3 sort id
 run         {steps_coexist}
@@ -424,9 +438,14 @@ def plot_results(
 def _run_lammps(lammps: str, np_cores: int, workdir: Path,
                 in_name: str, log_name: str, seed: int) -> float:
     """Run LAMMPS; return elapsed wall time in seconds. Raises on failure."""
-    lmp_cmd = lammps.split() + ["-in", in_name, "-log", log_name]
-    if np_cores > 1:
-        lmp_cmd = ["mpirun", "-np", str(np_cores)] + lmp_cmd
+    lmp_tokens = lammps.split()
+    if lmp_tokens and lmp_tokens[0] == "srun":
+        lmp_cmd = ([lmp_tokens[0], "-n", str(np_cores)]
+                   + lmp_tokens[1:] + ["-in", in_name, "-log", log_name])
+    elif np_cores > 1:
+        lmp_cmd = ["mpirun", "-np", str(np_cores)] + lmp_tokens + ["-in", in_name, "-log", log_name]
+    else:
+        lmp_cmd = lmp_tokens + ["-in", in_name, "-log", log_name]
     t0 = time.time()
     result = subprocess.run(lmp_cmd, cwd=workdir, capture_output=True, text=True)
     elapsed = time.time() - t0
@@ -435,6 +454,38 @@ def _run_lammps(lammps: str, np_cores: int, workdir: Path,
         print(result.stderr[-600:])
         raise RuntimeError(f"LAMMPS run failed with seed={seed}")
     return elapsed
+
+
+def collect_repeat_result(
+    workdir: Path,
+    seed: int,
+    n_atoms: int,
+    verify_melting_cn: bool = True,
+) -> dict:
+    """Extract Tm (+ melting verification) from an already-completed repeat's outputs.
+
+    Reads stage23.log (and stage2_final.lammpstrj, if present) from `workdir`.
+    Shared by `run_single_repeat` (right after LAMMPS finishes) and `--aggregate`
+    (reading logs left behind by earlier SLURM array tasks).
+    """
+    melted, cn_upper, cn_lower = False, 0.0, 0.0
+    if verify_melting_cn:
+        stage2_dump = workdir / "stage2_final.lammpstrj"
+        melted, cn_upper, cn_lower = verify_melting(stage2_dump, n_atoms)
+        if not melted:
+            if cn_upper <= 5.5:
+                print(f"    WARNING: Top half did not melt! CN_upper = {cn_upper:.1f} "
+                      f"(expected > 5.5 for liquid). Try increasing --T-melt or --steps-melt.")
+            if cn_lower >= 5.0:
+                print(f"    WARNING: Bottom half is not solid! CN_lower = {cn_lower:.1f} "
+                      f"(expected < 5.0 for solid). Try decreasing --T-solid.")
+        else:
+            print(f"    Melting verified: CN_upper = {cn_upper:.1f} (liquid), "
+                  f"CN_lower = {cn_lower:.1f} (solid)")
+
+    tm, temps, times = extract_tm_from_log(workdir / "stage23.log")
+    return {"seed": seed, "tm": tm, "temps": temps, "times": times,
+            "melted": melted, "cn_upper": cn_upper, "cn_lower": cn_lower}
 
 
 def run_single_repeat(
@@ -483,100 +534,20 @@ def run_single_repeat(
     t2 = _run_lammps(lammps, np_cores, workdir, "in.stage23", "stage23.log", seed)
     print(f"    Phase 2 (melt+coexist) finished in {t2:.1f}s (seed={seed})")
 
-    # --- Melting verification ---
     n_atoms = 8 * nx * ny * nz
-    melted, cn_upper, cn_lower = False, 0.0, 0.0
-    if verify_melting_cn:
-        stage2_dump = workdir / "stage2_final.lammpstrj"
-        melted, cn_upper, cn_lower = verify_melting(stage2_dump, n_atoms)
-        if not melted:
-            if cn_upper <= 5.5:
-                print(f"    WARNING: Top half did not melt! CN_upper = {cn_upper:.1f} "
-                      f"(expected > 5.5 for liquid). Try increasing --T-melt or --steps-melt.")
-            if cn_lower >= 5.0:
-                print(f"    WARNING: Bottom half is not solid! CN_lower = {cn_lower:.1f} "
-                      f"(expected < 5.0 for solid). Try decreasing --T-solid.")
-        else:
-            print(f"    Melting verified: CN_upper = {cn_upper:.1f} (liquid), "
-                  f"CN_lower = {cn_lower:.1f} (solid)")
-
-    # --- Extract Tm from Stage 3 ---
-    tm, temps, times = extract_tm_from_log(workdir / "stage23.log")
-    return {"seed": seed, "tm": tm, "temps": temps, "times": times,
-            "melted": melted, "cn_upper": cn_upper, "cn_lower": cn_lower}
+    return collect_repeat_result(workdir, seed, n_atoms, verify_melting_cn)
 
 
 # ---------------------------------------------------------------------------
 # Main workflow
 # ---------------------------------------------------------------------------
 
-def run(
-    pot: str,
-    outdir: Path,
-    lammps: str,
-    np_cores: int,
-    n_repeats: int,
-    nx: int,
-    ny: int,
-    nz: int,
-    T_solid: float,
-    T_melt: float,
-    steps_npt: int,
-    steps_melt: int,
-    steps_coexist: int,
-    a0: float,
-    seed_start: int,
-    dump_every: int = 1_000,
-    verify_melting_cn: bool = True,
-) -> None:
-    outdir.mkdir(parents=True, exist_ok=True)
-
+def _summarize(all_results: list[dict], outdir: Path, pot: str | None, nx: int, ny: int, nz: int) -> None:
+    """Aggregate Tm across repeats: print stats and write tm_summary.txt."""
     n_atoms = 8 * nx * ny * nz
-    pot_abs = str(Path(pot).resolve())
-
-    total_ps_npt = steps_npt * 0.002
-    total_ps = (steps_npt + steps_melt + steps_coexist) * 0.002
-
-    print(f"=== Melting Point: Two-Phase Coexistence ===")
-    print(f"  Supercell: {nx}x{ny}x{nz} = {n_atoms} atoms")
-    print(f"  Potential: {pot}")
-    print(f"  Protocol: NPT {total_ps_npt:.0f} ps + melt {steps_melt*0.002:.0f} ps "
-          f"+ NpH {steps_coexist*0.002:.0f} ps = {total_ps:.0f} ps")
-    print(f"  Repeats: {n_repeats}  |  Seed start: {seed_start}")
-    print(f"  LAMMPS: {lammps}  |  MPI tasks: {np_cores}")
-
-    all_results = []
-    for i in range(n_repeats):
-        seed = seed_start + i
-        run_dir = outdir / f"repeat_{i:02d}"
-        run_dir.mkdir(exist_ok=True)
-
-        print(f"\n--- Repeat {i+1}/{n_repeats} (seed={seed}) ---")
-        try:
-            res = run_single_repeat(
-                lammps=lammps,
-                np_cores=np_cores,
-                pot_abs=pot_abs,
-                workdir=run_dir,
-                seed=seed,
-                nx=nx, ny=ny, nz=nz,
-                T_solid=T_solid,
-                T_melt=T_melt,
-                steps_npt=steps_npt,
-                steps_melt=steps_melt,
-                steps_coexist=steps_coexist,
-                a0=a0,
-                dump_every=dump_every,
-                verify_melting_cn=verify_melting_cn,
-            )
-            all_results.append(res)
-            print(f"    Tm = {res['tm']:.2f} K  "
-                  f"(exp = {GE_TM_EXP} K, dT = {res['tm'] - GE_TM_EXP:+.1f} K)")
-        except Exception as e:
-            print(f"    FAILED: {e}")
 
     if not all_results:
-        print("\n  Error: all repeats failed.", file=sys.stderr)
+        print("\n  Error: no completed repeats found.", file=sys.stderr)
         sys.exit(1)
 
     tm_values = np.array([r["tm"] for r in all_results])
@@ -596,7 +567,7 @@ def run(
     summary_path = outdir / "tm_summary.txt"
     with open(summary_path, "w") as f:
         f.write(f"# Melting point: two-phase coexistence method\n")
-        f.write(f"# Potential: {pot}\n")
+        f.write(f"# Potential: {pot if pot else 'unknown'}\n")
         f.write(f"# Supercell: {nx}x{ny}x{nz} ({n_atoms} atoms)\n")
         f.write(f"# N repeats: {len(tm_values)}\n")
         f.write(f"# Tm = {mean_tm:.4f} +- {std_tm:.4f} K (s)\n")
@@ -609,7 +580,124 @@ def run(
             f.write(f"  {r['seed']:6d}  {r['tm']:10.4f}\n")
     print(f"  Summary written to {summary_path}")
 
-    plot_results(all_results, outdir)
+    #plot_results(all_results, outdir)
+
+
+def _aggregate(
+    outdir: Path,
+    pot: str | None,
+    n_repeats: int,
+    seed_start: int,
+    nx: int,
+    ny: int,
+    nz: int,
+    verify_melting_cn: bool,
+) -> None:
+    """Collect Tm from repeat_NN/ directories left behind by SLURM array tasks."""
+    n_atoms = 8 * nx * ny * nz
+    results_by_index: dict[int, dict] = {}
+    for i in range(n_repeats):
+        run_dir = outdir / f"repeat_{i:02d}"
+        seed = seed_start + i
+        if not (run_dir / "stage23.log").exists():
+            print(f"  Repeat {i:02d} (seed={seed}): no stage23.log found — skipping")
+            continue
+        try:
+            res = collect_repeat_result(run_dir, seed, n_atoms, verify_melting_cn)
+            results_by_index[i] = res
+            print(f"  Repeat {i:02d} (seed={seed}): Tm = {res['tm']:.2f} K "
+                  f"(exp = {GE_TM_EXP} K, dT = {res['tm'] - GE_TM_EXP:+.1f} K)")
+        except Exception as e:
+            print(f"  Repeat {i:02d} (seed={seed}): FAILED to parse ({e})")
+
+    all_results = [results_by_index[i] for i in sorted(results_by_index)]
+    _summarize(all_results, outdir, pot, nx, ny, nz)
+
+
+def run(
+    pot: str,
+    outdir: Path,
+    lammps: str,
+    np_cores: int,
+    n_repeats: int,
+    nx: int,
+    ny: int,
+    nz: int,
+    T_solid: float,
+    T_melt: float,
+    steps_npt: int,
+    steps_melt: int,
+    steps_coexist: int,
+    a0: float,
+    seed_start: int,
+    dump_every: int = 1_000,
+    verify_melting_cn: bool = True,
+    repeat_index: int | None = None,
+    aggregate: bool = False,
+) -> None:
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    if aggregate:
+        print(f"=== Melting Point: aggregating {n_repeats} repeats from {outdir} ===")
+        _aggregate(outdir, pot, n_repeats, seed_start, nx, ny, nz, verify_melting_cn)
+        return
+
+    n_atoms = 8 * nx * ny * nz
+    pot_abs = str(Path(pot).resolve())
+
+    total_ps_npt = steps_npt * 0.002
+    total_ps = (steps_npt + steps_melt + steps_coexist) * 0.002
+
+    print(f"=== Melting Point: Two-Phase Coexistence ===")
+    print(f"  Supercell: {nx}x{ny}x{nz} = {n_atoms} atoms")
+    print(f"  Potential: {pot}")
+    print(f"  Protocol: NPT {total_ps_npt:.0f} ps + melt {steps_melt*0.002:.0f} ps "
+          f"+ NpH {steps_coexist*0.002:.0f} ps = {total_ps:.0f} ps")
+    print(f"  Repeats: {n_repeats}  |  Seed start: {seed_start}")
+    print(f"  LAMMPS: {lammps}  |  MPI tasks/repeat: {np_cores}")
+    if repeat_index is not None:
+        print(f"  Running single repeat index {repeat_index} (SLURM array task)")
+
+    indices = [repeat_index] if repeat_index is not None else list(range(n_repeats))
+
+    results_by_index: dict[int, dict] = {}
+    for i in indices:
+        seed = seed_start + i
+        run_dir = outdir / f"repeat_{i:02d}"
+        run_dir.mkdir(exist_ok=True)
+        try:
+            res = run_single_repeat(
+                lammps=lammps,
+                np_cores=np_cores,
+                pot_abs=pot_abs,
+                workdir=run_dir,
+                seed=seed,
+                nx=nx, ny=ny, nz=nz,
+                T_solid=T_solid,
+                T_melt=T_melt,
+                steps_npt=steps_npt,
+                steps_melt=steps_melt,
+                steps_coexist=steps_coexist,
+                a0=a0,
+                dump_every=dump_every,
+                verify_melting_cn=verify_melting_cn,
+            )
+            results_by_index[i] = res
+            print(f"\n--- Repeat {i+1}/{n_repeats} (seed={seed}) done: "
+                  f"Tm = {res['tm']:.2f} K "
+                  f"(exp = {GE_TM_EXP} K, dT = {res['tm'] - GE_TM_EXP:+.1f} K)")
+        except Exception as e:
+            print(f"\n--- Repeat {i+1}/{n_repeats} (seed={seed}) FAILED: {e}")
+
+    if repeat_index is not None:
+        # SLURM array task: only this repeat runs here. Aggregation happens in
+        # a separate `--aggregate` pass once every array task has finished.
+        if not results_by_index:
+            sys.exit(1)
+        return
+
+    all_results = [results_by_index[i] for i in sorted(results_by_index)]
+    _summarize(all_results, outdir, pot, nx, ny, nz)
 
 
 # ---------------------------------------------------------------------------
@@ -632,7 +720,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Melting point of diamond Ge via two-phase coexistence (LAMMPS + MTP)"
     )
-    parser.add_argument("--pot", required=True, help="Path to potential (.almtp)")
+    parser.add_argument("--pot", default=None,
+                        help="Path to potential (.almtp). Required unless --aggregate is set "
+                             "(aggregation only reads existing logs; --pot is recorded in "
+                             "tm_summary.txt if given).")
 
     parser.add_argument("--nx", type=int, default=8,
                         help="x repeats (default: 8)")
@@ -643,8 +734,8 @@ def main() -> None:
 
     parser.add_argument("--T-solid", type=float, default=500.0,
                         help="NPT equilibration T (default: 500 K)")
-    parser.add_argument("--T-melt", type=float, default=1500.0,
-                        help="NVT melting T (default: 1500 K)")
+    parser.add_argument("--T-melt", type=float, default=1900.0,
+                        help="NVT melting T (default: 1900 K)")
     parser.add_argument("--steps-npt", type=int, default=10_000,
                         help="NPT steps at dt=2 fs (default: 10000 = 20 ps)")
     parser.add_argument("--steps-melt", type=int, default=10_000,
@@ -652,8 +743,17 @@ def main() -> None:
     parser.add_argument("--steps-coexist", type=int, default=100_000,
                         help="NpH coexist steps (default: 100000 = 200 ps)")
 
-    parser.add_argument("--n-repeats", type=int, default=1,
-                        help="Number of repeats (default: 1)")
+    parser.add_argument("--n-repeats", type=int, default=10,
+                        help="Number of repeats (default: 10)")
+    parser.add_argument("--repeat-index", type=int, default=None,
+                        help="Run only this single repeat (0-based index), writing to "
+                             "outdir/repeat_NN/. Set to $SLURM_ARRAY_TASK_ID by a SLURM "
+                             "array job (see scripts/submit_melting_point.sh) so each task "
+                             "runs one repeat. If omitted, all --n-repeats run sequentially.")
+    parser.add_argument("--aggregate", action="store_true",
+                        help="Skip running LAMMPS; collect Tm from existing repeat_NN/ "
+                             "directories under --outdir and write tm_summary.txt. Run "
+                             "this after all SLURM array tasks have completed.")
     parser.add_argument("--seed-start", type=int, default=42,
                         help="Starting random seed")
     parser.add_argument("--dump-every", type=int, default=1000,
@@ -662,7 +762,7 @@ def main() -> None:
     parser.add_argument("--lammps", default="lmp_mpi",
                         help="LAMMPS binary (default: lmp_mpi)")
     parser.add_argument("--np", type=int, default=1,
-                        help="MPI processes (default: 1)")
+                        help="MPI processes per repeat (default: 1)")
 
     parser.add_argument("--a0", type=float, default=5.7567,
                         help="Diamond lattice constant in A (default: 5.7567, MTP eq.)")
@@ -675,6 +775,9 @@ def main() -> None:
                         help="Skip CN check after Stage 2")
 
     args = parser.parse_args()
+
+    if not args.aggregate and args.pot is None:
+        parser.error("--pot is required unless --aggregate is set")
 
     if args.quick:
         print("=== Quick mode ===")
@@ -706,6 +809,8 @@ def main() -> None:
         seed_start=args.seed_start,
         dump_every=args.dump_every,
         verify_melting_cn=not args.no_verify_melting,
+        repeat_index=args.repeat_index,
+        aggregate=args.aggregate,
     )
 
 

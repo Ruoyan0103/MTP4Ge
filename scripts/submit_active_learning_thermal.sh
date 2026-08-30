@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=mtp_al_thermal
 #SBATCH --account=project_2012355
-#SBATCH --partition=test
-#SBATCH --time=01:00:00
+#SBATCH --partition=medium
+#SBATCH --time=36:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=10
 #SBATCH --cpus-per-task=1

@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=mtp_liquid
 #SBATCH --account=project_2012355
-#SBATCH --partition=test
-#SBATCH --time=01:00:00
-#SBATCH --nodes=1
+#SBATCH --partition=medium
+#SBATCH --time=06:00:00
+#SBATCH --nodes=10
 #SBATCH --ntasks=10
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
@@ -25,7 +25,7 @@ set -euo pipefail
 REPO_ROOT="/scratch/project_2012355/Paper_3/MTP4Ge"
 cd "$REPO_ROOT"
 
-POT="${1:-results/potentials/pot-2026-06-18.almtp}"
+POT="${1:-/scratch/project_2012355/Paper_3/00-subsets/07-short_range/pot24_08_26_bak.almtp}"
 shift || true
 
 # --- Environment ---

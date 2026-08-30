@@ -7,7 +7,7 @@
 
 #===================== Simulation Parameters =======================
 variable T          equal ${T_RUN}
-variable run_steps  equal 20000
+variable run_steps  equal 10000
 variable SEED       equal 12345
 
 #===================== System Setup ================================
