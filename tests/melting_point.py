@@ -347,23 +347,21 @@ def verify_melting(stage2_dump: Path, n_atoms: int) -> tuple[bool, float, float]
     return melted, cn_upper, cn_lower
 
 
-def extract_tm_from_log(log_path: Path, discard_fraction: float = 0.5) -> tuple[float, np.ndarray, np.ndarray]:
+def extract_tm_from_log(log_path: Path, last_ps: float = 10.0) -> tuple[float, np.ndarray, np.ndarray]:
     """Extract melting temperature from coexistence stage.
 
-    Uses the last (1 - discard_fraction) of the thermo data.
+    Uses the last `last_ps` picoseconds of the thermo data.
     Returns (Tm, temps, times_ps).
     """
     thermo = parse_lammps_log(log_path)
     temps = thermo["temp"]
     times = thermo["time"]
 
-    n = len(temps)
-    start = int(n * discard_fraction)
-    if start >= n:
-        start = 0
+    t_end = times[-1]
+    mask = times >= (t_end - last_ps)
 
-    tm = float(np.mean(temps[start:]))
-    return tm, temps[start:], times[start:]
+    tm = float(np.mean(temps[mask]))
+    return tm, temps[mask], times[mask]
 
 
 # ---------------------------------------------------------------------------
@@ -740,8 +738,8 @@ def main() -> None:
                         help="NPT steps at dt=2 fs (default: 10000 = 20 ps)")
     parser.add_argument("--steps-melt", type=int, default=10_000,
                         help="NVT melt steps (default: 10000 = 20 ps)")
-    parser.add_argument("--steps-coexist", type=int, default=100_000,
-                        help="NpH coexist steps (default: 100000 = 200 ps)")
+    parser.add_argument("--steps-coexist", type=int, default=70_000,
+                        help="NpH coexist steps (default: 100000 = 140 ps)")
 
     parser.add_argument("--n-repeats", type=int, default=10,
                         help="Number of repeats (default: 10)")

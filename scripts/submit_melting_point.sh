@@ -2,7 +2,7 @@
 #SBATCH --job-name=mtp_melting
 #SBATCH --account=project_2012355
 #SBATCH --partition=medium
-#SBATCH --time=20:00:00
+#SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=10
 #SBATCH --cpus-per-task=1
