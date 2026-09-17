@@ -31,6 +31,7 @@ sys.stdout.reconfigure(line_buffering=True)
 # Ensure repo root is on sys.path so `from src.X import` works when invoked as
 # `python src/active_learning.py` from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "utils"))
 
 import numpy as np
 import yaml
@@ -688,7 +689,7 @@ def run_dft_labeling(
                  'inline' runs jobs in parallel as subprocesses.
     3. Collect results from each OUTCAR and write labelled.cfg.
     """
-    from src.convert import write_cfg
+    from convert import write_cfg
 
     vasp_mode = vasp_settings.get("vasp_mode", "sbatch")
     dft_iter_dir.mkdir(parents=True, exist_ok=True)
@@ -885,14 +886,14 @@ def _make_no_al_strained_cfg(no_al_trajs: list[dict], out_path: Path, lat_param:
 # expansion result: integrating alpha_L(T) from 0->1000 K gives only ~0.57%
 # (DFT) to ~0.99% (this project's own MTP fit) linear strain, so +/-0.03 gives
 # a comfortable ~3-5x margin over the real excursion without spending points
-# far outside the regime that matters (unlike tests/thermal_properties.py's
+# far outside the regime that matters (unlike src/physical_validation/thermal_properties.py's
 # own +/-0.05 QHA-fit convention, which is deliberately wider for curvature
 # robustness rather than to match the physical excursion). Point count/spacing
 # (7, denser near 0) still differs from that script's evenly-spaced
 # --n-volumes sweep, so it remains an independent held-out check.
 _PHONON_LATTICE_RATES = [-0.03, -0.02, -0.01, 0.0, 0.01, 0.02, 0.03]
 # Displacement distance (Å) — deliberately different from the 0.01 Å default
-# used by tests/phonon_dispersion.py / tests/thermal_properties.py, for the
+# used by src/physical_validation/phonon_dispersion.py / src/physical_validation/thermal_properties.py, for the
 # same held-out-evaluation reason.
 _PHONON_DISPLACEMENT = 0.02
 

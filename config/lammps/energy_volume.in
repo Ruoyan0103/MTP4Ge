@@ -1,0 +1,31 @@
+# LAMMPS single-point energy evaluation for an E-V curve (uniform lattice scaling).
+# Uses pair_style hybrid/overlay mtp nlh, matching tests/elastic_constant/potential.mod
+# — the working setup for potentials using the new (LRBSChebyshev) radial basis type,
+# which `mlp calculate_efs` in the mlip-3-prune build cannot load ("Wrong radial
+# basis type").
+#
+# Placeholders filled at runtime by scripts/energy_volume_lammps.py:
+#   ${STRUCT_FILE} → scaled structure, LAMMPS data file (atom_style atomic)
+#   ${POT_PATH}    → absolute path to the .mtp/.almtp potential
+#   ${MASS}        → atomic mass (amu); required by LAMMPS to accept the data file
+
+units       metal
+boundary    p p p
+atom_style  atomic
+box         tilt large
+
+read_data   ${STRUCT_FILE}
+
+mass        1 ${MASS}
+
+pair_style  hybrid/overlay mtp nlh
+pair_coeff  * * mtp ${POT_PATH} 0
+pair_coeff  1 1 nlh 32 32 0.05121 0.50355 0.44524 49.82156 12.56998 4.13684 1.28 2.0
+
+neighbor    1.0 nsq
+neigh_modify once no every 1 delay 0 check yes
+
+run         0
+
+variable e equal pe
+print "${e}" file energy.txt screen no

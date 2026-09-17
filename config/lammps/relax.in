@@ -1,0 +1,51 @@
+# LAMMPS relaxation (fixed-cell ions-only, or ions+cell) using pair_style
+# hybrid/overlay mtp nlh — same workaround as config/lammps/energy_volume.in
+# for potentials whose radial basis type `mlp relax` cannot load ("Wrong
+# radial basis type").
+#
+# Placeholders filled at runtime by scripts/defect_formation_lammps.py:
+#   ${STRUCT_FILE}     → structure, LAMMPS data file (atom_style atomic)
+#   ${POT_PATH}        → absolute path to the .mtp/.almtp potential
+#   ${MASS}            → atomic mass (amu)
+#   ${FTOL}            → minimize force two-norm tolerance
+#   ${MAXITER}         → minimize max iterations
+#   ${MAXEVAL}         → minimize max force/energy evaluations
+#   ${BOX_RELAX_LINE}  → "fix cellrelax all box/relax aniso 0.0" (ISIF=3
+#                        analog: ions + cell) or "" (ISIF=2 analog: fixed cell)
+#   ${UNFIX_LINE}      → "unfix cellrelax" (paired with BOX_RELAX_LINE) or ""
+
+units       metal
+boundary    p p p
+atom_style  atomic
+box         tilt large
+
+read_data   ${STRUCT_FILE}
+
+mass        1 ${MASS}
+
+pair_style  hybrid/overlay mtp nlh
+pair_coeff  * * mtp ${POT_PATH} 0
+pair_coeff  1 1 nlh 32 32 0.05121 0.50355 0.44524 49.82156 12.56998 4.13684 1.28 2.0
+
+neighbor    1.0 nsq
+neigh_modify once no every 1 delay 0 check yes
+
+min_style   cg
+min_modify  dmax 0.01 line quadratic
+
+thermo      10
+thermo_style custom step pe press
+
+${BOX_RELAX_LINE}
+minimize    0.0 ${FTOL} ${MAXITER} ${MAXEVAL}
+${UNFIX_LINE}
+
+write_data  relaxed.data
+
+dump        forces all custom 1 force.dump id type x y z fx fy fz
+dump_modify forces format line "%d %d %20.10f %20.10f %20.10f %20.10f %20.10f %20.10f"
+dump_modify forces sort id
+run         0
+
+variable e equal pe
+print "${e}" file energy.txt screen no

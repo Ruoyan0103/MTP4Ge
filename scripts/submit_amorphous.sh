@@ -43,7 +43,7 @@ date
 LAMMPS_BIN=$(which lmp_mpi 2>/dev/null || echo "/projappl/project_2012355/CODE/lammps-stable_23Jun2022_update4-EPH/src/lmp_mpi")
 
 # Use srun directly (--lammps as srun + binary, --np 1 avoids mpirun wrapper)
-python tests/amorphous_rdf.py \
+python src/physical_validation/amorphous_rdf.py \
     --pot "$POT" \
     --lammps "srun $LAMMPS_BIN" \
     --np 1 \

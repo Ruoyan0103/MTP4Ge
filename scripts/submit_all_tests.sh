@@ -27,10 +27,10 @@ echo "Potential: $POT"
 echo "Started:   $(date)"
 
 echo ""; echo "--- [1/2] vacancy_migration ---"
-#python tests/vacancy_migration.py --pot "$POT" && echo "PASS" || echo "FAIL"
+#python src/physical_validation/vacancy_migration.py --pot "$POT" && echo "PASS" || echo "FAIL"
 
 echo ""; echo "--- [2/2] RDF ---"
-#python tests/amorphous_rdf.py --pot "$POT" && echo "PASS" || echo "FAIL"
-python tests/liquid_rdf.py --pot "$POT" && echo "PASS" || echo "FAIL"
+#python src/physical_validation/amorphous_rdf.py --pot "$POT" && echo "PASS" || echo "FAIL"
+python src/physical_validation/liquid_rdf.py --pot "$POT" && echo "PASS" || echo "FAIL"
 
 echo ""; echo "=== DONE: $(date) ==="

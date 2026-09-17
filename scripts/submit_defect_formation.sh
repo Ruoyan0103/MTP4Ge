@@ -24,7 +24,7 @@ MAXSTEPS="${4:-500}"
 echo "Potential: $POT"
 echo "a0 = $A0 Å | fmax = $FMAX eV/Å | max_steps = $MAXSTEPS"
 
-python -m tests.defect_formation \
+python src/physical_validation/defect_formation.py \
     --pot "$POT" \
     --a0 "$A0" \
     --fmax "$FMAX" \

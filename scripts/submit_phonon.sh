@@ -11,7 +11,7 @@
 #SBATCH --error=logs/phonon_%j.err
 #
 # Phonon dispersion + total DOS via LAMMPS (pair_style mlip) single-point
-# force evaluations on phonopy-displaced supercells (tests/phonon_dispersion.py
+# force evaluations on phonopy-displaced supercells (src/physical_validation/phonon_dispersion.py
 # --method lammps), matching the ilearn LAMMPS-based workflow.
 #
 # Usage:
@@ -47,7 +47,7 @@ echo "  LAMMPS    : $LAMMPS_BIN"
 echo "  Extra args: $@"
 date
 
-python tests/phonon_dispersion.py \
+python src/physical_validation/phonon_dispersion.py \
     --pot "$POT" \
     --method lammps \
     --lammps "srun $LAMMPS_BIN" \

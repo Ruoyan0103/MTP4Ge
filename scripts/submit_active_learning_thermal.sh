@@ -36,6 +36,6 @@ echo "=== Thermal AL SLURM job ==="
 echo "  Node     : $(hostname)"
 echo "  Time     : $(date)"
 
-bash scripts/03_active_learning_thermal.sh "$@"
+bash scripts/save/03_active_learning_thermal.sh "$@"
 
 echo "Done: $(date)"

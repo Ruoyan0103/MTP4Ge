@@ -15,8 +15,8 @@
 #
 # Usage:
 #   # Step 1 — generate the list of calc dirs:
-#   python scripts/generate_strained_diamond.py
-#   python scripts/generate_sia_configs.py
+#   python scripts/save/generate_strained_diamond.py
+#   python scripts/save/generate_sia_configs.py
 #
 #   # Step 2 — build the dir list and submit array job:
 #   find data/strained_dft data/sia_dft -name POSCAR -exec dirname {} \; | sort > data/vasp_dirs.txt
@@ -24,8 +24,8 @@
 #   sbatch --array=0-$((N-1))%20 scripts/submit_vasp_array.sh data/vasp_dirs.txt
 #
 #   # Step 3 — collect results after all jobs finish:
-#   python scripts/collect_dft_results.py --indir data/strained_dft --out data/strained_diamond.xyz
-#   python scripts/collect_dft_results.py --indir data/sia_dft      --out data/sia_configs.xyz
+#   python scripts/save/collect_dft_results.py --indir data/strained_dft --out data/strained_diamond.xyz
+#   python scripts/save/collect_dft_results.py --indir data/sia_dft      --out data/sia_configs.xyz
 
 set -euo pipefail
 

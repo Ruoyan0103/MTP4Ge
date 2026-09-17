@@ -39,7 +39,7 @@ echo "  Time : $(date)"
 echo "  Pot  : $POT"
 echo "  Date : $DATE"
 
-bash scripts/02_test_errors.sh "$POT" errors \
+bash scripts/save/02_test_errors.sh "$POT" errors \
     "data/train-${DATE}.cfg" \
     "data/val-${DATE}.cfg" \
     "data/test-${DATE}.cfg"

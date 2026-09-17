@@ -35,7 +35,7 @@ conda activate mtp4ge
 The input file `data/train_diamond.xyz` is already in the repository. Convert it to MLIP-3 CFG format and partition it into a seed set and a candidate pool:
 
 ```bash
-bash scripts/00_convert.sh data/train_diamond.xyz
+bash scripts/save/00_convert.sh data/train_diamond.xyz
 ```
 
 Produces:
@@ -49,7 +49,7 @@ Produces:
 Trains MTP-16 (template: `mtp_templates/16.almtp`) on the seed set:
 
 ```bash
-bash scripts/01_train.sh
+bash scripts/save/01_train.sh
 ```
 
 Output: `results/potentials/pot.almtp`

@@ -50,7 +50,7 @@ echo "  Extra args: $@"
 date
 
 # srun handles MPI parallelism via SLURM_NTASKS
-python tests/liquid_rdf/liquid_rdf.py \
+python src/physical_validation/liquid_rdf.py \
     --pot "$POT" \
     --lammps "srun $LAMMPS_BIN" \
     "$@"
