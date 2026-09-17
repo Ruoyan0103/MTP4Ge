@@ -63,10 +63,8 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
 from utils import _mlp_env, calc_efs, write_bare_cfg, _read_cfg_geometry
+from convert import _parse_all_cfgs
 from energy_volume import DEFAULT_LAMMPS, _run_lammps_energy
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "scripts" / "save"))
-from cfg_to_xyz import _parse_all_cfgs
 
 DEFAULT_TRAIN_CONFIG = "config/training.yaml"
 LAMMPS_TEMPLATE = Path(__file__).resolve().parent.parent.parent / "config" / "lammps" / "relax.in"

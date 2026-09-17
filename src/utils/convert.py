@@ -1,30 +1,49 @@
 """
-Convert training/candidate data to MLIP-3 CFG format.
+Convert between MLIP-3 CFG format and extended XYZ / VASP POSCAR.
 
-Two input formats (--format):
-  xyz   - extended XYZ training data with energy/forces labels (default).
-  dump  - LAMMPS dump trajectory (.lammpstrj); forces are set to zero (not
-          available from MD dump) and energy/stress are omitted. Output CFG
-          is suitable for:
-              mlp calculate_grade pot.almtp dump.cfg graded.cfg
+Every invocation must state both directions explicitly with --from/--to.
+Supported (--from, --to) pairs:
+  xyz,    cfg    - extended XYZ training data with energy/forces labels;
+                   writes MLIP-3 CFG to --outdir.
+  dump,   cfg    - LAMMPS dump trajectory (.lammpstrj); forces are set to
+                   zero (not available from MD dump) and energy/stress are
+                   omitted. Output CFG is suitable for:
+                       mlp calculate_grade pot.almtp dump.cfg graded.cfg
+  cfg,    xyz    - MLIP-3 CFG (reverse of xyz,cfg); writes extended XYZ
+                   (readable by VESTA/OVITO) to --output.
+  cfg,    poscar - MLIP-3 CFG; writes a VASP POSCAR to --output (first
+                   frame only if the CFG has more than one block).
+  poscar, cfg    - VASP POSCAR/CONTCAR (geometry only, no energy/forces);
+                   writes a bare CFG. --input may be a single file or a
+                   directory, searched recursively for files named POSCAR
+                   or CONTCAR.
 
 Usage:
-    python utils/convert.py --input <file.xyz> --outdir data/
-    python utils/convert.py --format dump --input results/active_learning/iter_001/dump.lammpstrj
-    python utils/convert.py --format dump --input dump.lammpstrj --output candidates.cfg --stride 10
+    python src/utils/convert.py --from xyz --to cfg --input <file.xyz> --outdir data/
+    python src/utils/convert.py --from dump --to cfg --input results/active_learning/iter_001/dump.lammpstrj
+    python src/utils/convert.py --from dump --to cfg --input dump.lammpstrj --output candidates.cfg --stride 10
+    python src/utils/convert.py --from cfg --to xyz --input data/train.cfg [--output out.xyz]
+    python src/utils/convert.py --from cfg --to poscar --input data/train.cfg
+    python src/utils/convert.py --from poscar --to cfg --input data/AL/Int
+    python src/utils/convert.py --from poscar --to cfg --input data/AL/Int/B/POSCAR
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
 import numpy as np
 
 try:
+    from ase import Atoms
     from ase.io import read as ase_read
+    from ase.io import write as ase_write
 except ImportError:
     print("ERROR: ASE not found. Install with: pip install ase", file=sys.stderr)
     sys.exit(1)
+
+from utils import write_bare_cfg
 
 
 def _get_config_type(atoms) -> str:
@@ -259,30 +278,187 @@ def _convert_dump(input_path: Path, output: str | None, stride: int) -> None:
     print(f"Wrote {count} configs → {output_path}")
 
 
+# ---------------------------------------------------------------------------
+# CFG → XYZ / POSCAR (reverse of _convert_xyz; for VESTA/OVITO/VASP)
+# ---------------------------------------------------------------------------
+
+def _parse_all_cfgs(path: Path) -> list:
+    """Parse every CFG block in *path* and return a list of ASE Atoms objects."""
+    idx_to_species = {v: k for k, v in SPECIES_MAP.items()}
+
+    text = path.read_text()
+    blocks = re.findall(r"BEGIN_CFG(.*?)END_CFG", text, re.DOTALL)
+    if not blocks:
+        raise ValueError(f"No CFG block found in {path}")
+
+    atoms_list = []
+    for block in blocks:
+        lines = block.splitlines()
+        n_atoms, cell, positions, types, forces, energy = 0, [], [], [], [], None
+        mode = None
+
+        for line in lines:
+            s = line.strip()
+            if s == "Size":
+                mode = "size"
+            elif mode == "size":
+                n_atoms = int(s); mode = None
+            elif s == "Supercell":
+                mode = "supercell"
+            elif mode == "supercell":
+                cell.append([float(x) for x in s.split()])
+                if len(cell) == 3:
+                    mode = None
+            elif s.startswith("AtomData:"):
+                header = s.split()[1:]  # id type cartes_x cartes_y cartes_z [fx fy fz]
+                has_forces = "fx" in header
+                mode = "atoms"
+            elif mode == "atoms" and s and not s.startswith(
+                ("Feature", "Energy", "PlusStress", "BEGIN", "END")
+            ):
+                parts = s.split()
+                if len(parts) >= 5:
+                    types.append(int(parts[1]))
+                    positions.append([float(parts[2]), float(parts[3]), float(parts[4])])
+                    if has_forces and len(parts) >= 8:
+                        forces.append([float(parts[5]), float(parts[6]), float(parts[7])])
+                    if len(positions) == n_atoms:
+                        mode = None
+            elif s.startswith("Energy"):
+                parts = s.split()
+                if len(parts) >= 2:
+                    energy = float(parts[1])
+
+        symbols = [idx_to_species.get(t, f"X{t}") for t in types]
+        atoms = Atoms(
+            symbols=symbols,
+            positions=np.array(positions),
+            cell=np.array(cell),
+            pbc=True,
+        )
+        info = {}
+        if energy is not None:
+            info["energy"] = energy
+        atoms.info.update(info)
+        if forces and len(forces) == n_atoms:
+            atoms.arrays["forces"] = np.array(forces)
+        atoms_list.append(atoms)
+
+    return atoms_list
+
+
+def _convert_cfg(cfg_path: Path, output: str | None, poscar: bool) -> None:
+    if not cfg_path.exists():
+        sys.exit(f"Error: {cfg_path} does not exist")
+
+    atoms_list = _parse_all_cfgs(cfg_path)
+    n = len(atoms_list)
+
+    if output:
+        out_path = Path(output)
+    elif poscar:
+        out_path = cfg_path.with_suffix(".POSCAR")
+    else:
+        out_path = cfg_path.with_suffix(".xyz")
+
+    fmt = "vasp" if poscar else "extxyz"
+    if poscar and n > 1:
+        print(f"Warning: POSCAR supports only one frame; writing first of {n} blocks.")
+        atoms_list = [atoms_list[0]]
+
+    ase_write(str(out_path), atoms_list if len(atoms_list) > 1 else atoms_list[0], format=fmt)
+    print(f"Written {n} frame(s) → {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# POSCAR/CONTCAR → CFG (geometry only, no energy/forces)
+# ---------------------------------------------------------------------------
+
+def _convert_poscar(path: Path, output: str | None) -> None:
+    if path.is_file():
+        targets = [path]
+    else:
+        targets = sorted(
+            p for p in path.rglob("*") if p.is_file() and p.name in ("POSCAR", "CONTCAR")
+        )
+    if not targets:
+        sys.exit(f"No POSCAR/CONTCAR files found under {path}")
+    if output and len(targets) > 1:
+        sys.exit("--output only supported for a single POSCAR/CONTCAR file")
+
+    for src in targets:
+        atoms = ase_read(str(src), format="vasp")
+        symbols = atoms.get_chemical_symbols()
+        unknown = sorted(set(symbols) - SPECIES_MAP.keys())
+        if unknown:
+            sys.exit(f"{src}: unmapped species {unknown} (add to SPECIES_MAP)")
+
+        cell = atoms.get_cell().array
+        positions = atoms.get_positions()
+        types = [SPECIES_MAP[s] for s in symbols]
+
+        out_path = Path(output) if output else src.with_name(src.name + ".cfg")
+        write_bare_cfg([(cell, positions, types)], out_path)
+        print(f"  {src} -> {out_path}")
+
+
+_SUPPORTED_CONVERSIONS = {
+    ("xyz", "cfg"),
+    ("dump", "cfg"),
+    ("cfg", "xyz"),
+    ("cfg", "poscar"),
+    ("poscar", "cfg"),
+}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Convert training/candidate data to MLIP-3 CFG format"
+        description="Convert between training/candidate data and MLIP-3 CFG format. "
+                     "Both --from and --to must be given explicitly."
     )
-    parser.add_argument("--format", choices=["xyz", "dump"], default="xyz",
-                        help="Input format: 'xyz' extended XYZ with energy/forces "
-                             "(default), 'dump' LAMMPS trajectory dump (zero forces, "
-                             "for calculate_grade)")
-    parser.add_argument("--input", required=True, help="Input file (.xyz or .lammpstrj)")
+    parser.add_argument("--from", dest="from_format", required=True,
+                        choices=["xyz", "dump", "cfg", "poscar"],
+                        help="Input format: 'xyz' extended XYZ with energy/forces, "
+                             "'dump' LAMMPS trajectory dump (zero forces, for "
+                             "calculate_grade), 'cfg' MLIP-3 CFG, 'poscar' VASP "
+                             "POSCAR/CONTCAR (geometry only)")
+    parser.add_argument("--to", dest="to_format", required=True,
+                        choices=["cfg", "xyz", "poscar"],
+                        help="Output format. Supported --from/--to pairs: "
+                             + ", ".join(f"{a}->{b}" for a, b in sorted(_SUPPORTED_CONVERSIONS)))
+    parser.add_argument("--input", required=True,
+                        help="Input file (.xyz, .lammpstrj, .cfg) or, for "
+                             "--from poscar, a POSCAR/CONTCAR file or a "
+                             "directory to search recursively")
     parser.add_argument("--outdir", default="data/",
-                        help="Output directory (--format xyz only; default: data/)")
+                        help="Output directory (--from xyz only; default: data/)")
     parser.add_argument("--output", default=None,
-                        help="Output CFG file (--format dump only; default: same "
-                             "name as input with .cfg extension)")
+                        help="Output file (--from dump/cfg/poscar only, and for "
+                             "poscar only with a single-file --input); default: "
+                             "same name as input with .cfg/.xyz/.POSCAR extension")
     parser.add_argument("--stride", type=int, default=1,
-                        help="Write every N-th frame (--format dump only; default: "
+                        help="Write every N-th frame (--from dump only; default: "
                              "1 = all frames)")
     args = parser.parse_args()
 
+    pair = (args.from_format, args.to_format)
+    if pair not in _SUPPORTED_CONVERSIONS:
+        parser.error(
+            f"Unsupported conversion --from {args.from_format} --to {args.to_format}. "
+            "Supported pairs: " + ", ".join(f"{a}->{b}" for a, b in sorted(_SUPPORTED_CONVERSIONS))
+        )
+
     input_path = Path(args.input)
-    if args.format == "xyz":
+    if pair == ("xyz", "cfg"):
         _convert_xyz(input_path, Path(args.outdir))
-    else:
+    elif pair == ("dump", "cfg"):
         _convert_dump(input_path, args.output, args.stride)
+    elif pair == ("cfg", "xyz"):
+        _convert_cfg(input_path, args.output, poscar=False)
+    elif pair == ("cfg", "poscar"):
+        _convert_cfg(input_path, args.output, poscar=True)
+    else:  # ("poscar", "cfg")
+        _convert_poscar(input_path, args.output)
 
 
 if __name__ == "__main__":
