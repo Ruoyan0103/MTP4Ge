@@ -32,7 +32,7 @@ for XYZ in "$@"; do
     CFG="data/${STEM}.cfg"
 
     echo "=== Converting $XYZ → $CFG ==="
-    python src/utils/convert.py --input "$XYZ" --outdir data/
+    python src/utils/convert.py --from xyz --to cfg --input "$XYZ" --outdir data/
 
     echo "=== Splitting $CFG into train/val/test (80/10/10) ==="
     python - "$CFG" data/train.cfg data/val.cfg data/test.cfg <<'PYEOF'

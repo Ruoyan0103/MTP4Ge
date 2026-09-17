@@ -134,9 +134,9 @@ sbatch scripts/submit_train.sh
 - `src/test_errors.py` — wraps `mlp check_errors` / `mlp calculate_efs`.
 
 ### Utils (`src/utils/`)
-Holds shared code imported by nearly every module under `src/physical_validation/` (each of those adds `src/utils/` to `sys.path` alongside its own directory), plus `convert.py`, imported the same way by `src/active_learning.py` and `scripts/save/collect_thermal_iter.py`.
+Holds shared code imported by nearly every module under `src/physical_validation/` (each of those adds `src/utils/` to `sys.path` alongside its own directory), plus `convert.py`, imported the same way by `src/active_learning.py`, `src/physical_validation/defect_formation.py`, and `scripts/save/collect_thermal_iter.py`.
 
-- `src/utils/convert.py` — `--format {xyz,dump}`. `xyz` (default): reads extended XYZ via ASE, writes MLIP-3 CFG with energy/forces (`write_cfg`); `SPECIES_MAP` maps element symbol → integer type index; configs without `free_energy` are silently skipped; energy written to CFG is `free_energy` (not `energy`). `dump`: reads a LAMMPS trajectory dump, writes a bare CFG with zero forces/no energy (`write_dump_cfg`, via `parse_dump`) for `mlp calculate_grade`.
+- `src/utils/convert.py` — CLI requires explicit `--from {xyz,dump,cfg,poscar}` and `--to {cfg,xyz,poscar}` (no defaults; unsupported pairs error out). Supported pairs: `xyz→cfg` reads extended XYZ via ASE, writes MLIP-3 CFG with energy/forces (`write_cfg`); `SPECIES_MAP` maps element symbol → integer type index; configs without `free_energy` are silently skipped; energy written to CFG is `free_energy` (not `energy`). `dump→cfg` reads a LAMMPS trajectory dump, writes a bare CFG with zero forces/no energy (`write_dump_cfg`, via `parse_dump`) for `mlp calculate_grade`. `cfg→xyz`/`cfg→poscar` parse CFG blocks (`_parse_all_cfgs`, symbols from the reverse of `SPECIES_MAP`) and write extended XYZ (readable by VESTA/OVITO) or a VASP POSCAR (first frame only); reused by `defect_formation.py`. `poscar→cfg` reads a VASP POSCAR/CONTCAR file (or recursively finds them under a directory) and writes a bare geometry-only CFG via `write_bare_cfg` (from `src/utils/utils.py`).
 - `src/utils/utils.py` — shared helpers: `load_structure` (CFG/XYZ/LAMMPS data → cell+positions+types; defaults to 2-atom Ge diamond), `write_bare_cfg`, `calc_efs`, `compute_rdf`, `read_lammps_dump`, `coordination_number`. Sets `LD_LIBRARY_PATH` for OpenBLAS via `_mlp_env()`.
 - `src/utils/mtp_calculator.py` — `MTPCalculator` (wraps `mlp calculate_efs`) and `MTPLammpsCalculator` (wraps LAMMPS `pair_style hybrid/overlay mtp nlh`, via `config/lammps/phonon_dispersion_mtp.in`): ASE `Calculator` subclasses, one subprocess per evaluation; intended for NEB images and small-cell relaxations.
 - `src/utils/test_mtp_calculator.py` — pytest smoke test: `MTPCalculator` returns a float energy and near-zero forces on perfect diamond. `MTP_POT` env var overrides the default potential path.
@@ -164,7 +164,6 @@ Property-calculation/QA scripts that evaluate a trained potential against DFT/ex
 - `generate_strained_diamond.py` — 42 VASP input dirs: 6 Voigt strain modes (xx, yy, zz, yz, xz, xy, vol) × ±1%/±2%/±5%. Required to constrain C11 and C44; isotropic volume alone is insufficient.
 - `generate_sia_lammps.py` — LAMMPS data files for AL seeds: 4 SIA types + ±2% volume strains, 2×2×2 supercell (65 atoms). Auto-called by `03_active_learning_sia.sh` if files are missing.
 - `generate_sia_configs.py` — VASP input dirs for direct DFT: 4 SIA types in 2×2×2 supercell, 1 reference + 20 perturbed configs each.
-- `cfg_to_xyz.py` — converts CFG files back to extended XYZ.
 - `split_test.py` — splits a CFG file into train/val/test subsets.
 
 ### Key conventions

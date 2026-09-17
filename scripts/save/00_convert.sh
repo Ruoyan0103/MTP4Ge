@@ -19,7 +19,7 @@ echo "  Input : $INPUT"
 OUTNAME="$(basename "$INPUT" .xyz).cfg"
 echo "  Output: $OUTDIR/$OUTNAME"
 
-python src/utils/convert.py --input "$INPUT" --outdir "$OUTDIR"
+python src/utils/convert.py --from xyz --to cfg --input "$INPUT" --outdir "$OUTDIR"
 
 echo ""
 echo "Done."
