@@ -1,1 +1,0 @@
-# Liquid RDF test package

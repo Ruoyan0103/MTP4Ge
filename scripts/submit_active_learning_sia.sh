@@ -35,6 +35,6 @@ echo "=== SIA AL SLURM job ==="
 echo "  Node     : $(hostname)"
 echo "  Time     : $(date)"
 
-bash scripts/03_active_learning_sia.sh "$@"
+bash scripts/save/03_active_learning_sia.sh "$@"
 
 echo "Done: $(date)"

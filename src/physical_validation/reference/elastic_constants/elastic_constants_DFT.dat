@@ -1,0 +1,3 @@
+# DFT elastic constants for Ge (diamond cubic)
+# Format: C11  C12  C44  B (all in GPa)
+105  37  54  59

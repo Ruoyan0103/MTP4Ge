@@ -41,7 +41,7 @@ echo "  Potential : $POT"
 echo "  Extra args: $@"
 date
 
-python tests/vacancy_migration.py \
+python src/physical_validation/vacancy_migration.py \
     --pot "$POT" \
     "$@"
 

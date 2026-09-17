@@ -26,7 +26,7 @@
 #   sbatch --array=0-15 scripts/submit_melting_point.sh results/potentials/pot-init.almtp --n-repeats 16
 #
 #   # Step 2 — after all array tasks finish, collect Tm and write the summary:
-#   python tests/melting_point.py --pot results/potentials/pot-init.almtp --aggregate
+#   python src/physical_validation/melting_point.py --pot results/potentials/pot-init.almtp --aggregate
 #
 # Quick test (4×4×8 cell, 1 repeat, ~10 min):
 #   sbatch --array=0 scripts/submit_melting_point.sh results/potentials/pot-init.almtp --quick
@@ -36,7 +36,7 @@ set -euo pipefail
 REPO_ROOT="/scratch/project_2012355/Paper_3/MTP4Ge"
 cd "$REPO_ROOT"
 
-POT="${1:-/scratch/project_2012355/Paper_3/00-subsets/07-short_range/pot24_08_26.almtp}"
+POT="${1:-results/potentials/20.mtp}"
 shift || true
 
 # --- Environment ---
@@ -46,7 +46,7 @@ export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export LD_LIBRARY_PATH="/appl/spack/v023/install-tree/gcc-14.2.0/openblas-0.3.28-r66ni7/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-LAMMPS_BIN="/projappl/project_2012355/CODE/lammps-stable_23Jun2022_update4-EPH/src/lmp_mpi"
+LAMMPS_BIN="/projappl/project_2012355/CODE/lammps-MTP/src/lmp_mpi"
 
 echo "================================================================"
 echo "  Melting Point: Two-Phase Coexistence (NpH method)"
@@ -60,7 +60,7 @@ echo "================================================================"
 
 # One repeat per array task: --repeat-index pins this task to a single seed
 # and skips aggregation (run `--aggregate` separately once all tasks finish).
-python tests/melting_point.py \
+python src/physical_validation/melting_point.py \
     --pot "$POT" \
     --lammps "srun $LAMMPS_BIN" \
     --np "${SLURM_NTASKS:-10}" \

@@ -11,3 +11,4 @@ dependencies:
   - pip:
       - ase>=3.22
       - pyyaml>=6.0
+      - phonopy

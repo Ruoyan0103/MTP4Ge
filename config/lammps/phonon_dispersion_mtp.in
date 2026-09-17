@@ -1,0 +1,39 @@
+# LAMMPS single-point energy + force evaluation, using pair_style
+# hybrid/overlay mtp nlh — the workaround for potentials whose radial basis
+# type config/lammps/phonon_dispersion.in's `pair_style mlip` cannot load
+# ("Wrong radial basis type"). See tests/elastic_constant/potential.mod for
+# the same workaround used for elastic constants.
+#
+# General-purpose single-point evaluator: used by tests/phonon_dispersion_lammps.py
+# (forces on phonopy-displaced supercells) and tests/mtp_lammps_calculator.py
+# (energy + forces, as an ASE Calculator for NEB/BFGS).
+#
+# Placeholders filled at runtime:
+#   ${STRUCT_FILE} → structure, LAMMPS data file (atom_style atomic)
+#   ${POT_PATH}    → absolute path to the .mtp/.almtp potential
+#   ${MASS}        → atomic mass (amu); required by LAMMPS to accept the data file
+
+units       metal
+boundary    p p p
+atom_style  atomic
+box         tilt large
+
+read_data   ${STRUCT_FILE}
+
+mass        1 ${MASS}
+
+pair_style  hybrid/overlay mtp nlh
+pair_coeff  * * mtp ${POT_PATH} 0
+pair_coeff  1 1 nlh 32 32 0.05121 0.50355 0.44524 49.82156 12.56998 4.13684 1.28 2.0
+
+neighbor    1.0 nsq
+neigh_modify once no every 1 delay 0 check yes
+
+dump        forces all custom 1 force.dump id type x y z fx fy fz
+dump_modify forces format line "%d %d %20.10f %20.10f %20.10f %20.10f %20.10f %20.10f"
+dump_modify forces sort id
+
+run         0
+
+variable e equal pe
+print "${e}" file energy.txt screen no

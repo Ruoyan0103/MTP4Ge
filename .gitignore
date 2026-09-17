@@ -9,6 +9,9 @@ results/
 # Tutorials
 tutorials/
 
+# Papers (reference PDFs)
+papers/
+
 # Hermes
 .hermes/
 
