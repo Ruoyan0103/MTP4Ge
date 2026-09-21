@@ -283,7 +283,22 @@ def _convert_dump(input_path: Path, output: str | None, stride: int) -> None:
 # ---------------------------------------------------------------------------
 
 def _parse_all_cfgs(path: Path) -> list:
-    """Parse every CFG block in *path* and return a list of ASE Atoms objects."""
+    """Parse every CFG block in *path* and return a list of ASE Atoms objects.
+
+    Recovers, in addition to geometry/species/forces:
+      - energy: the "Energy" keyword is a bare line, with the value on the
+        *next* line (matching write_cfg's layout) — stored under both
+        "energy" and "free_energy" (this project's CFG/training-label
+        convention; see write_cfg and CLAUDE.md) so the extxyz round trip
+        attaches both to the resulting ASE SinglePointCalculator.
+      - virial: the 6-value Voigt "PlusStress" line [xx, yy, zz, yz, xz, xy]
+        (also value-on-next-line), expanded into the 3x3 tensor under
+        atoms.info["virial"] that src/tagging_structs/GAP_settings.py's
+        _voigt()/check_errors_gap expect.
+      - config_type / orig_index: from "Feature type" / "Feature orig_index"
+        (any other "Feature <key> <value>" line is carried over verbatim
+        under atoms.info[key] too).
+    """
     idx_to_species = {v: k for k, v in SPECIES_MAP.items()}
 
     text = path.read_text()
@@ -293,41 +308,51 @@ def _parse_all_cfgs(path: Path) -> list:
 
     atoms_list = []
     for block in blocks:
-        lines = block.splitlines()
-        n_atoms, cell, positions, types, forces, energy = 0, [], [], [], [], None
-        mode = None
+        lines = [l.strip() for l in block.splitlines()]
+        n_atoms = 0
+        cell: list[list[float]] = []
+        positions: list[list[float]] = []
+        types: list[int] = []
+        forces: list[list[float]] = []
+        energy = None
+        virial = None
+        extra_info: dict = {}
 
-        for line in lines:
-            s = line.strip()
+        i = 0
+        while i < len(lines):
+            s = lines[i]
             if s == "Size":
-                mode = "size"
-            elif mode == "size":
-                n_atoms = int(s); mode = None
+                i += 1
+                n_atoms = int(lines[i])
             elif s == "Supercell":
-                mode = "supercell"
-            elif mode == "supercell":
-                cell.append([float(x) for x in s.split()])
-                if len(cell) == 3:
-                    mode = None
+                for _ in range(3):
+                    i += 1
+                    cell.append([float(x) for x in lines[i].split()])
             elif s.startswith("AtomData:"):
                 header = s.split()[1:]  # id type cartes_x cartes_y cartes_z [fx fy fz]
                 has_forces = "fx" in header
-                mode = "atoms"
-            elif mode == "atoms" and s and not s.startswith(
-                ("Feature", "Energy", "PlusStress", "BEGIN", "END")
-            ):
-                parts = s.split()
-                if len(parts) >= 5:
+                for _ in range(n_atoms):
+                    i += 1
+                    parts = lines[i].split()
                     types.append(int(parts[1]))
                     positions.append([float(parts[2]), float(parts[3]), float(parts[4])])
                     if has_forces and len(parts) >= 8:
                         forces.append([float(parts[5]), float(parts[6]), float(parts[7])])
-                    if len(positions) == n_atoms:
-                        mode = None
-            elif s.startswith("Energy"):
-                parts = s.split()
-                if len(parts) >= 2:
-                    energy = float(parts[1])
+            elif s == "Energy":
+                i += 1
+                energy = float(lines[i])
+            elif s.startswith("PlusStress"):
+                i += 1
+                xx, yy, zz, yz, xz, xy = (float(x) for x in lines[i].split())
+                virial = [[xx, xy, xz], [xy, yy, yz], [xz, yz, zz]]
+            elif s.startswith("Feature"):
+                m = re.match(r"Feature\s+(\S+)\s+(.*)", s)
+                if m:
+                    key, val = m.group(1), m.group(2).strip()
+                    extra_info[key] = val
+                    if key == "type":
+                        extra_info["config_type"] = val
+            i += 1
 
         symbols = [idx_to_species.get(t, f"X{t}") for t in types]
         atoms = Atoms(
@@ -336,9 +361,12 @@ def _parse_all_cfgs(path: Path) -> list:
             cell=np.array(cell),
             pbc=True,
         )
-        info = {}
+        info = dict(extra_info)
         if energy is not None:
             info["energy"] = energy
+            info["free_energy"] = energy
+        if virial is not None:
+            info["virial"] = np.array(virial)
         atoms.info.update(info)
         if forces and len(forces) == n_atoms:
             atoms.arrays["forces"] = np.array(forces)

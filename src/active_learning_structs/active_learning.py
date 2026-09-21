@@ -1,22 +1,40 @@
 """
 Active learning loop for MTP potential refinement.
 
-Follows the MLIP-2 tutorial-2 workflow (md_al_mtp.sh):
+Follows the MLIP-2 tutorial-2 workflow (md_al_mtp.sh). All AL state lives
+under <pot_path's folder>/AL/: updated_pot.almtp and updated_train.cfg are
+initialized once (copied from --pot / init_train_cfg) and then updated in
+place every iteration — no per-iteration copies. Each iteration lives in
+AL/iter_N/, holding that iteration's own MD/selection artifacts plus a
+labeling subfolder AL/iter_N/<tagging_engine>/ (tagging_engine is 'vasp' or
+'gap', see Steps C/D below): for 'vasp' this holds one struct_NNN/ per
+selected structure (one VASP run each); for 'gap' it holds the batched
+turbogap predict inputs/output directly, flat, since one call covers all
+selected structures at once.
 
   A. LAMMPS MD        — run MD with MLIP selection; extrapolative configs
                         written to iter_dir/preselected.cfg
   B. select_add       — pick most informative subset → iter_dir/selected.cfg
-  C/D. VASP DFT       — single-point DFT on each selected structure (ASE Vasp)
-  E. retrain          — append 80 % to train.cfg, 20 % to test.cfg, retrain
+  C/D. Labeling       — single-point reference labels on each selected
+                        structure, via one of two engines chosen by
+                        config/active_learning.yaml's tagging_engine:
+                          'vasp' (default) — DFT single-point via ASE Vasp,
+                                              one VASP run per structure
+                                              (run_dft_labeling)
+                          'gap'             — TurboGAP GAP potential,
+                                              one turbogap predict call over
+                                              all selected structures
+                                              (run_gap_labeling, reuses
+                                              src/tagging_structs/GAP_settings.py)
+  E. retrain          — append iter_dir/new_added.cfg to updated_train.cfg,
+                        retrain updated_pot.almtp (warm start)
 
 Usage:
-    python src/active_learning.py
-    python src/active_learning.py --pot results/potentials/pot.almtp --max-iter 10
+    python src/active_learning_structs/active_learning.py
+    python src/active_learning_structs/active_learning.py --pot results/potentials/pot.almtp --max-iter 10
 """
 
-import datetime
 import os
-import random
 import re
 import shlex
 import shutil
@@ -29,9 +47,10 @@ from pathlib import Path
 sys.stdout.reconfigure(line_buffering=True)
 
 # Ensure repo root is on sys.path so `from src.X import` works when invoked as
-# `python src/active_learning.py` from the repo root.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent / "utils"))
+# `python src/active_learning_structs/active_learning.py` from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "utils"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tagging_structs"))
 
 import numpy as np
 import yaml
@@ -64,6 +83,42 @@ def _truncate_cfg(path: Path, n: int) -> None:
     blocks = re.split(r"(?=BEGIN_CFG\b)", path.read_text())
     blocks = [b for b in blocks if b.strip().startswith("BEGIN_CFG")]
     path.write_text("\n".join(blocks[:n]) + "\n")
+
+
+def _record_trajectory_info(
+    al_root: Path,
+    tagging_engine: str,
+    initial_potential: str,
+    initial_train_cfg: Path,
+    trajectories: list[dict] | None,
+) -> None:
+    """Append a record of this AL run's inputs to <al_root>/trajectory_info.txt.
+
+    Lives at the AL folder's top level alongside updated_pot.almtp and
+    updated_train.cfg, so the provenance of the structures accumulated into
+    those two files stays traceable. One block per distinct tagging_engine
+    ('vasp'/'gap' — guarded so resuming an already-started run doesn't
+    duplicate its entry) recording the initial potential, the initial
+    training dataset it was copied from, and the trajectories config used to
+    generate the MD structures.
+    """
+    info_path = al_root / "trajectory_info.txt"
+    header = f"[tagging_engine: {tagging_engine}]"
+    existing = info_path.read_text() if info_path.exists() else ""
+    if header in existing:
+        return
+    traj_text = yaml.dump(trajectories, default_flow_style=False, sort_keys=False) if trajectories else "(none)\n"
+    block = (
+        f"{header}\n"
+        f"initial_potential: {initial_potential}\n"
+        f"initial_training_dataset: {initial_train_cfg}\n"
+        f"trajectories:\n"
+        + "".join(f"  {line}\n" for line in traj_text.splitlines())
+        + "\n"
+    )
+    with info_path.open("a") as f:
+        f.write(block)
+    print(f"  Trajectory info recorded: {info_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -267,18 +322,23 @@ def run_parallel_lammps_md(
 
         T         = float(traj["temperature"])
         tmpl_type = traj.get("template", "solid")
-        if "lat_param" in traj:
-            lat_param = float(traj["lat_param"])
-        elif tmpl_type == "liquid":
-            lat_param = _liquid_lat_param(T)
-        else:
-            lat_param = default_lat_param
-        if tmpl_type == "liquid":
-            coef = float(traj.get("coef", 0.0))
-            if coef:
-                lat_param *= (1.0 + coef)
-        else:
+        if "lattice_constant" in traj:
+            # Hard override: use as-is, skip the density calc and coef scaling below.
+            lat_param = float(traj["lattice_constant"])
             coef = 0.0
+        else:
+            if "lat_param" in traj:
+                lat_param = float(traj["lat_param"])
+            elif tmpl_type == "liquid":
+                lat_param = _liquid_lat_param(T)
+            else:
+                lat_param = default_lat_param
+            if tmpl_type == "liquid":
+                coef = float(traj.get("coef", 0.0))
+                if coef:
+                    lat_param *= (1.0 + coef)
+            else:
+                coef = 0.0
         supercell_size = int(traj.get("supercell_size", default_supercell_size))
         cubic          = bool(traj.get("cubic", default_cubic))
         threshold = float(traj.get("grade_threshold", default_threshold))
@@ -308,7 +368,7 @@ def run_parallel_lammps_md(
         (md_dir / "md.in").write_text(text)
 
         cmd = shlex.split(lammps) + ["-in", "md.in", "-log", "log.lammps", "-screen", "none"]
-        lat_src = "" if "lat_param" in traj else " (derived)"
+        lat_src = "" if ("lattice_constant" in traj or "lat_param" in traj) else " (derived)"
         coef_str = f"  coef={coef:+.3f}" if coef else ""
         print(
             f"  LAMMPS [{i:03d}] T={T:.0f}K  lat={lat_param:.4f}Å{lat_src}{coef_str}  ({tmpl_type})"
@@ -433,44 +493,34 @@ def read_cfg(path: Path) -> list[tuple]:
 # ---------------------------------------------------------------------------
 
 def _write_vasp_input(atoms, vasp_dir: Path, vasp_settings: dict) -> None:
-    """Write VASP input files (POSCAR, INCAR, KPOINTS, POTCAR) without running."""
-    from ase.calculators.vasp import Vasp
+    """Write VASP input files (POSCAR, INCAR, KPOINTS, POTCAR) without running.
+
+    DFT physics parameters (ENCUT, EDIFF, smearing, functional, precision,
+    k-spacing, ...) come from src/tagging_structs/VASP_settings.set_cal(),
+    the single source of truth shared with the structure-generation scripts.
+    Only cluster/job-specific settings (parallelization, pseudopotential
+    path/version, output directory) are overridden per call from
+    config/active_learning.yaml's vasp_* job settings.
+    """
+    from VASP_settings import set_cal
 
     vasp_dir.mkdir(parents=True, exist_ok=True)
     pp_path = vasp_settings.get("vasp_pp_path", "")
     if pp_path:
         os.environ["VASP_PP_PATH"] = pp_path
 
-    use_kspacing = "vasp_kspacing" in vasp_settings
-    kwargs = dict(
-        xc=vasp_settings.get("vasp_gga", "pbe").lower(),
-        pp_version=vasp_settings.get("vasp_pp_version", "64"),
-        setups=vasp_settings.get("vasp_setups", {}),
-        encut=vasp_settings.get("vasp_encut", 400),
-        ibrion=vasp_settings.get("vasp_ibrion", -1),
-        nsw=vasp_settings.get("vasp_nsw", 0),
-        nelm=vasp_settings.get("vasp_nelm", 100),
-        isif=vasp_settings.get("vasp_isif", 2),
-        prec=vasp_settings.get("vasp_prec", "Accurate"),
-        ediff=vasp_settings.get("vasp_ediff", 1e-5),
-        ismear=vasp_settings.get("vasp_ismear", 0),
-        sigma=vasp_settings.get("vasp_sigma", 0.05),
-        lasph=vasp_settings.get("vasp_lasph", True),
-        lwave=vasp_settings.get("vasp_lwave", False),
-        lcharg=vasp_settings.get("vasp_lcharg", False),
-        kpar=vasp_settings.get("vasp_kpar", 4),
-        ncore=vasp_settings.get("vasp_ncore", 8),
-        directory=str(vasp_dir),
-    )
-    if use_kspacing:
-        kwargs["kspacing"] = float(vasp_settings["vasp_kspacing"])
-        kwargs["kgamma"] = vasp_settings.get("vasp_kgamma", True)
-    calc = Vasp(**kwargs)
+    overrides = dict(directory=str(vasp_dir))
+    if "vasp_pp_version" in vasp_settings:
+        overrides["pp_version"] = vasp_settings["vasp_pp_version"]
+    if "vasp_kpar" in vasp_settings:
+        overrides["kpar"] = vasp_settings["vasp_kpar"]
+    if "vasp_ncore" in vasp_settings:
+        overrides["ncore"] = vasp_settings["vasp_ncore"]
+    if "vasp_command" in vasp_settings:
+        overrides["command"] = vasp_settings["vasp_command"]
+
+    calc = set_cal(**overrides)
     calc.write_input(atoms)
-    if not use_kspacing:
-        (vasp_dir / "KPOINTS").write_text(
-            "Gamma point only\n0\nGamma\n1 1 1\n0 0 0\n"
-        )
 
 
 def _submit_vasp_array_and_wait(
@@ -502,6 +552,14 @@ def _submit_vasp_array_and_wait(
 {setup}
 
 export OMP_NUM_THREADS=1
+
+# This sbatch call runs from inside the AL driver's own SLURM job. SLURM_*
+# variables are always propagated into a new job's environment regardless of
+# --export (see `man sbatch`), so the driver job's own SLURM_MEM_PER_CPU
+# survives here alongside whatever memory variable (e.g. SLURM_MEM_PER_NODE)
+# this job's own allocation sets — srun then refuses to start because they're
+# mutually exclusive. Unset them so only this job's own allocation applies.
+unset SLURM_MEM_PER_CPU SLURM_MEM_PER_GPU SLURM_MEM_PER_NODE
 
 STRUCT_DIR="{abs_iter_dir}/struct_$(printf '%03d' $SLURM_ARRAY_TASK_ID)"
 cd "$STRUCT_DIR"
@@ -689,7 +747,7 @@ def run_dft_labeling(
                  'inline' runs jobs in parallel as subprocesses.
     3. Collect results from each OUTCAR and write labelled.cfg.
     """
-    from convert import write_cfg
+    from convert_format import write_cfg
 
     vasp_mode = vasp_settings.get("vasp_mode", "sbatch")
     dft_iter_dir.mkdir(parents=True, exist_ok=True)
@@ -728,42 +786,69 @@ def run_dft_labeling(
     return labelled_path
 
 
+def run_gap_labeling(
+    selected_cfg: Path,
+    gap_iter_dir: Path,
+    gap_settings: dict,
+) -> Path:
+    """Label structures in selected_cfg via the GAP potential; write labelled.cfg.
+
+    Counterpart of run_dft_labeling for tagging_engine: gap. Reuses
+    src/tagging_structs/GAP_settings.py's turbogap-predict workflow (same GAP
+    potential/backend as the standalone tagging script) instead of VASP DFT —
+    single `turbogap predict` call on all selected structures at once, no
+    per-structure SLURM array job needed.
+    """
+    from convert_format import write_cfg
+    from GAP_settings import _merge_labels, run_predict
+
+    gap_iter_dir.mkdir(parents=True, exist_ok=True)
+    atoms_list = read_cfg(selected_cfg)
+
+    orig_frames = []
+    for i, (atoms, meta) in enumerate(atoms_list):
+        atoms = _remove_ghost_atoms(atoms)
+        atoms.info["config_type"] = meta.get("type", "unknown")
+        atoms.info["orig_index"] = meta.get("orig_index", str(i))
+        orig_frames.append(atoms)
+
+    print(f"  Running turbogap predict on {len(orig_frames)} structures...")
+    traj_out = run_predict(orig_frames, gap_iter_dir, gap_settings)
+
+    from ase.io import read as ase_read
+    gap_frames_raw = ase_read(str(traj_out), index=":")
+    if len(gap_frames_raw) != len(orig_frames):
+        raise RuntimeError(
+            f"frame count mismatch: {len(orig_frames)} selected vs "
+            f"{len(gap_frames_raw)} turbogap output"
+        )
+
+    gap_frames = _merge_labels(orig_frames, gap_frames_raw)
+    labeled = [
+        (orig.info.get("orig_index", str(i)), gap)
+        for i, (orig, gap) in enumerate(zip(orig_frames, gap_frames))
+    ]
+
+    labelled_path = gap_iter_dir / "labelled.cfg"
+    write_cfg(labeled, labelled_path)
+    return labelled_path
+
+
 # ---------------------------------------------------------------------------
 # Training-set management
 # ---------------------------------------------------------------------------
 
-def split_and_distribute_cfg(
-    labelled: Path,
-    train_data: Path,
-    test_path: Path,
-    rng_seed: int,
-) -> None:
-    """Append new labeled configs 80/20 to train / test (no validation set).
-    n_train = ceil(0.8 * n), remainder goes to test."""
-    blocks = re.split(r"(?=BEGIN_CFG\b)", labelled.read_text())
+def append_new_configs(new_cfg: Path, train_data: Path) -> int:
+    """Append every config block in new_cfg to train_data. Returns count appended."""
+    blocks = re.split(r"(?=BEGIN_CFG\b)", new_cfg.read_text())
     blocks = [b.strip() for b in blocks if b.strip().startswith("BEGIN_CFG")]
     if not blocks:
-        print("  No configs to distribute.")
-        return
-
-    rng = random.Random(rng_seed)
-    rng.shuffle(blocks)
-    n = len(blocks)
-    n_train = max(1, round(0.8 * n))
-    train_blocks = blocks[:n_train]
-    test_blocks  = blocks[n_train:]
-
-    def _append(path: Path, blks: list[str]) -> None:
-        if not blks:
-            return
-        with open(path, "a") as f:
-            f.write("\n\n".join(blks) + "\n")
-
-    _append(train_data, train_blocks)
-    _append(test_path,  test_blocks)
-    print(
-        f"  Split: {len(train_blocks)} → train | {len(test_blocks)} → test"
-    )
+        print("  No configs to add.")
+        return 0
+    with open(train_data, "a") as f:
+        f.write("\n\n".join(blocks) + "\n")
+    print(f"  Added {len(blocks)} new config(s) to {train_data}")
+    return len(blocks)
 
 
 def retrain(train_cfg_path: str, pot_path: str, train_config: str, iteration: int, log_path: str = "") -> None:
@@ -970,27 +1055,22 @@ def run_active_learning(
     max_iter: int,
     al_pot_path: str = "",
     dft_dir: str = "",
-    label: str = "",
-    max_dft_per_iter: int = 0,
+    max_tagging_per_iter: int = 0,
 ) -> None:
-    mlp            = train_cfg["mlp_binary"]
+    mlp = train_cfg["mlp_binary"]
 
-    # Create a dated copy of the base training set for this AL run.
-    date = datetime.date.today().isoformat()
-    test_path = Path(f"data/test-{date}.cfg")
-    if not test_path.exists():
-        base_test = Path(al_cfg.get("init_test_cfg", ""))
-        if base_test.name and base_test.exists():
-            shutil.copy(base_test, test_path)
-            print(f"  Created test set: {test_path} (copied from {base_test})")
-        else:
-            test_path.touch()
-    dated_train = Path(f"data/train-{date}.cfg")
-    if not dated_train.exists():
-        base_train = Path(al_cfg.get("init_train_cfg", "data/train-init.cfg"))
-        shutil.copy(base_train, dated_train)
-        print(f"  Created training set: {dated_train} (copied from {base_train})")
-    train_data = dated_train
+    # All AL state lives under <pot_path's folder>/AL/, initialized once from
+    # the caller-supplied potential/training set and updated in place every
+    # iteration thereafter (no per-iteration copies, no date-stamped names).
+    al_root = Path(pot_path).parent / "AL"
+    al_root.mkdir(parents=True, exist_ok=True)
+
+    train_data = al_root / "updated_train.cfg"
+    base_train = Path(al_cfg.get("init_train_cfg", "data/train-init.cfg"))
+    if not train_data.exists():
+        shutil.copy(base_train, train_data)
+        print(f"  Created training set: {train_data} (copied from {base_train})")
+
     grade_threshold = al_cfg.get("grade_threshold", 2.0)
     grade_break     = al_cfg.get("grade_break", 0.0)
     temperature    = al_cfg.get("temperature", 300)
@@ -1000,33 +1080,38 @@ def run_active_learning(
     cubic          = bool(al_cfg.get("cubic", False))
     trajectories   = al_cfg.get("trajectories", None)
     md_template    = Path("config/lammps/md_nvt.in")
-    al_outdir      = Path("results/active_learning")
-    al_outdir.mkdir(parents=True, exist_ok=True)
+    al_outdir      = al_root
 
-    # AL writes to a separate file so the initial potential is never overwritten.
-    # al_pot_path can be specified explicitly; defaults to <input>_al.almtp.
+    # AL writes to a separate potential file so the initial pot.almtp is never
+    # overwritten. al_pot_path can be specified explicitly (e.g. to share one
+    # output potential across multiple AL scripts); defaults to AL/updated_pot.almtp.
     if not al_pot_path:
-        al_pot_path = str(Path(pot_path).parent / f"pot-{date}.almtp")
+        al_pot_path = str(al_root / "updated_pot.almtp")
     if not Path(al_pot_path).exists() or Path(al_pot_path).resolve() != Path(pot_path).resolve():
         shutil.copy(pot_path, al_pot_path)
 
+    tagging_engine = al_cfg.get("tagging_engine", "vasp").lower()
+    if tagging_engine not in ("vasp", "gap"):
+        print(f"ERROR: unknown tagging_engine {tagging_engine!r} (expected 'vasp' or 'gap')", file=sys.stderr)
+        sys.exit(1)
     vasp_settings  = {k: v for k, v in al_cfg.items() if k.startswith("vasp_") or k.startswith("slurm_")}
+    gap_settings   = {k: v for k, v in al_cfg.items() if k.startswith("turbogap_") or k.startswith("slurm_")}
+
+    _record_trajectory_info(al_root, tagging_engine, pot_path, base_train, trajectories)
 
     print("=== Active Learning ===")
     print(f"  Initial potential : {pot_path}")
     print(f"  AL potential      : {al_pot_path}")
+    print(f"  Tagging engine    : {tagging_engine}")
     print(f"  Training set  : {train_data}  ({_count_cfg(train_data)} configs)")
 
     print(f"  Max iterations: {max_iter}")
-    print(f"  Max DFT per iter: {max_dft_per_iter if max_dft_per_iter > 0 else 'unlimited'}")
+    print(f"  Max tagging per iter: {max_tagging_per_iter if max_tagging_per_iter > 0 else 'unlimited'}")
     sys.stdout.flush()
 
     if not train_data.exists():
         print(f"ERROR: training set not found: {train_data}", file=sys.stderr)
         sys.exit(1)
-
-    label_dir = al_outdir / label if label else al_outdir
-    label_dir.mkdir(parents=True, exist_ok=True)
 
     do_strain   = bool(trajectories and any(
         t.get("strain", False) for t in trajectories
@@ -1042,8 +1127,7 @@ def run_active_learning(
         print(f"Active Learning Iteration {iteration}/{max_iter}")
         print(f"{'='*60}")
 
-        iter_subdir = Path(label) / f"iter_{iteration:03d}" if label else Path(f"iter_{iteration:03d}")
-        iter_dir = al_outdir / iter_subdir
+        iter_dir = al_outdir / f"iter_{iteration}"
         iter_dir.mkdir(parents=True, exist_ok=True)
 
         iteration_marker = iter_dir / ".iteration_complete"
@@ -1105,20 +1189,20 @@ def run_active_learning(
             if n_selected > 0:
                 print(f"  {n_selected} structures selected.")
 
-        # Optionally cap how many AL-selected structures go to DFT this iteration.
-        n_for_dft = n_selected
-        if n_selected > 0 and max_dft_per_iter > 0 and n_selected > max_dft_per_iter:
-            _truncate_cfg(iter_selected, max_dft_per_iter)
-            n_for_dft = max_dft_per_iter
-            print(f"  Capped to {n_for_dft} structures for DFT (--max-dft-per-iter={max_dft_per_iter}).")
+        # Optionally cap how many AL-selected structures go to tagging this iteration.
+        n_for_tagging = n_selected
+        if n_selected > 0 and max_tagging_per_iter > 0 and n_selected > max_tagging_per_iter:
+            _truncate_cfg(iter_selected, max_tagging_per_iter)
+            n_for_tagging = max_tagging_per_iter
+            print(f"  Capped to {n_for_tagging} structures for tagging (--max-tagging-per-iter={max_tagging_per_iter}).")
 
         # Step B.5: strain AL-selected structures from strain=True trajectories only
-        cfg_for_dft: Path | None = iter_selected if n_selected > 0 else None
+        cfg_for_tagging: Path | None = iter_selected if n_selected > 0 else None
         if do_strain and n_selected > 0:
             strained_cfg = iter_dir / "selected_strained.cfg"
             if strained_cfg.exists():
                 print("\nStep B.5 — skipping (selected_strained.cfg already exists).")
-                cfg_for_dft = strained_cfg
+                cfg_for_tagging = strained_cfg
             else:
                 print("\nStep B.5 — straining structures from strain=True trajectories only...")
                 sys.stdout.flush()
@@ -1133,9 +1217,9 @@ def run_active_learning(
                         strained_cfg = expanded
                 else:
                     strained_cfg = direct
-                cfg_for_dft = strained_cfg
+                cfg_for_tagging = strained_cfg
                 print(f"  {n_to_strain} structure(s) strained × 30, {n_direct} passed through directly.")
-            n_for_dft = _count_cfg(cfg_for_dft)
+            n_for_tagging = _count_cfg(cfg_for_tagging)
 
         # Step B.6: no_al trajectories — load structure, strain/displace directly, merge
         if no_al_trajs:
@@ -1157,27 +1241,30 @@ def run_active_learning(
                     _make_no_al_phonon_cfg(no_al_phonon_trajs, phonon_path, lat_param)
                     parts.append(phonon_path.read_text())
                 no_al_cfg.write_text("".join(parts))
-            if cfg_for_dft is not None and _count_cfg(cfg_for_dft) > 0:
-                merged = iter_dir / "merged_for_dft.cfg"
+            if cfg_for_tagging is not None and _count_cfg(cfg_for_tagging) > 0:
+                merged = iter_dir / "merged_for_tagging.cfg"
                 if not merged.exists():
-                    merged.write_text(cfg_for_dft.read_text() + no_al_cfg.read_text())
-                cfg_for_dft = merged
+                    merged.write_text(cfg_for_tagging.read_text() + no_al_cfg.read_text())
+                cfg_for_tagging = merged
             else:
-                cfg_for_dft = no_al_cfg
-            n_for_dft = _count_cfg(cfg_for_dft)
+                cfg_for_tagging = no_al_cfg
+            n_for_tagging = _count_cfg(cfg_for_tagging)
 
-        # Steps C/D: VASP single-point DFT
-        if cfg_for_dft is None or n_for_dft == 0:
-            print("\nNo structures for DFT this iteration — skipping.")
+        # Steps C/D: single-point labeling (VASP DFT or GAP)
+        if cfg_for_tagging is None or n_for_tagging == 0:
+            print("\nNo structures for tagging this iteration — skipping.")
             continue
-        print(f"\nSteps C/D — VASP DFT on {n_for_dft} structures...")
+        print(f"\nSteps C/D — {tagging_engine.upper()} labeling on {n_for_tagging} structures...")
         sys.stdout.flush()
-        dft_iter_dir = (
-            Path(dft_dir) / f"iter_{iteration:03d}"
+        tagging_iter_dir = (
+            Path(dft_dir) / f"iter_{iteration}"
             if dft_dir
-            else iter_dir / "dft"
+            else iter_dir / tagging_engine
         )
-        labelled = run_dft_labeling(cfg_for_dft, dft_iter_dir, vasp_settings)
+        if tagging_engine == "gap":
+            labelled = run_gap_labeling(cfg_for_tagging, tagging_iter_dir, gap_settings)
+        else:
+            labelled = run_dft_labeling(cfg_for_tagging, tagging_iter_dir, vasp_settings)
         n_labelled = _count_cfg(labelled)
         if n_labelled == 0:
             print("  No labelled configs from DFT — evaluating errors on current potential and stopping.")
@@ -1192,12 +1279,12 @@ def run_active_learning(
             else:
                 print(f"  Errors written to {err_out}")
             break
-        shutil.copy(labelled, "data/labelled.cfg")
-        print(f"  Labelled configs written to data/labelled.cfg")
+        new_added = iter_dir / "new_added.cfg"
+        shutil.copy(labelled, new_added)
+        print(f"  Labelled configs written to {new_added}")
 
-        # Distribute 80/20 → train / test
         n_train_before = _count_cfg(train_data)
-        split_and_distribute_cfg(labelled, train_data, test_path, rng_seed=iteration)
+        append_new_configs(new_added, train_data)
         n_train = _count_cfg(train_data)
 
         # Step E: retrain
@@ -1234,25 +1321,18 @@ def run_active_learning(
     print(f"\nActive learning complete.")
     print(f"  AL potential      : {al_pot_path}")
     print(f"  Final training set: {_count_cfg(train_data)} configs")
-    print(f"  Test set          : {_count_cfg(test_path)} configs")
 
-    # Final dated error report.
-    # Output dirs results/errors/train-<date>/ and results/errors/test-<date>/
-    # share the same date suffix as pot-<date>.almtp, train-<date>.cfg, test-<date>.cfg.
-    err_base = Path("results/errors")
-    for cfg_path, label in [(train_data, f"train-{date}"), (test_path, f"test-{date}")]:
-        if not cfg_path.exists() or _count_cfg(cfg_path) == 0:
-            print(f"  Skipping check_errors on {label} (empty or missing).")
-            continue
-        outdir = err_base / label
+    # Final error report on the accumulated training set.
+    if train_data.exists() and _count_cfg(train_data) > 0:
+        outdir = al_root / "errors"
         outdir.mkdir(parents=True, exist_ok=True)
         report   = outdir / "errors.txt"
         log_file = outdir / "error.log"
-        print(f"\n  check_errors [{label}] → {outdir}")
+        print(f"\n  check_errors [train] → {outdir}")
         sys.stdout.flush()
         result = subprocess.run(
             shlex.split(mlp) + [
-                "check_errors", al_pot_path, str(cfg_path),
+                "check_errors", al_pot_path, str(train_data),
                 f"--log={log_file}",
                 f"--report_to={report}",
             ],
@@ -1273,12 +1353,11 @@ def main() -> None:
     parser.add_argument("--al-config", default=DEFAULT_AL_CONFIG,    help="Active learning YAML config")
     parser.add_argument("--pot",       help="Potential path (overrides config)")
     parser.add_argument("--max-iter",  type=int, help="Max AL iterations (overrides al-config)")
-    parser.add_argument("--al-pot",      help="Explicit output path for the evolving AL potential (default: pot-<date>.almtp)")
+    parser.add_argument("--al-pot",      help="Explicit output path for the evolving AL potential (default: <pot's folder>/AL/updated_pot.almtp)")
     parser.add_argument("--temperature", type=float, help="NVT temperature in K (overrides al-config temperature)")
     parser.add_argument("--lat-param",   type=float, help="Diamond cubic lattice constant (Å) for lattice creation (overrides al-config lat_param)")
-    parser.add_argument("--dft-dir",          help="Root directory for VASP DFT calculations (e.g. data/defect_dft or data/thermal_dft)")
-    parser.add_argument("--label",            default="", help="Subdirectory label under results/active_learning/ (e.g. thermal_1500, sia_vacancy)")
-    parser.add_argument("--max-dft-per-iter", type=int, default=0, help="Cap DFT calculations per iteration (0 = no cap)")
+    parser.add_argument("--dft-dir",              help="Root directory for VASP DFT calculations (e.g. data/defect_dft or data/thermal_dft)")
+    parser.add_argument("--max-tagging-per-iter", type=int, default=0, help="Cap DFT/GAP labeling jobs per iteration (0 = no cap)")
     args = parser.parse_args()
 
     train_cfg = _load(args.config)
@@ -1289,11 +1368,11 @@ def main() -> None:
     if args.lat_param:
         al_cfg["lat_param"] = args.lat_param
 
-    pot_path         = args.pot or al_cfg.get("init_train_pot") or train_cfg["output_potential"]
-    max_iter         = args.max_iter or al_cfg.get("max_iterations", 20)
-    max_dft_per_iter = args.max_dft_per_iter or int(al_cfg.get("max_dft_per_iter", 0))
+    pot_path             = args.pot or al_cfg.get("init_train_pot") or train_cfg["output_potential"]
+    max_iter             = args.max_iter or al_cfg.get("max_iterations", 20)
+    max_tagging_per_iter = args.max_tagging_per_iter or int(al_cfg.get("max_tagging_per_iter", 0))
 
-    run_active_learning(train_cfg, al_cfg, pot_path, max_iter, al_pot_path=args.al_pot or "", dft_dir=args.dft_dir or "", label=args.label, max_dft_per_iter=max_dft_per_iter)
+    run_active_learning(train_cfg, al_cfg, pot_path, max_iter, al_pot_path=args.al_pot or "", dft_dir=args.dft_dir or "", max_tagging_per_iter=max_tagging_per_iter)
 
 
 if __name__ == "__main__":
