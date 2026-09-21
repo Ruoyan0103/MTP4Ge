@@ -274,8 +274,10 @@ def main() -> None:
     parser.add_argument("--struct",  default=None,
                         help="Reference structure (CFG / XYZ / LAMMPS data). "
                              "Default: 2-atom ASE diamond Ge (a=5.658 Å)")
-    parser.add_argument("--outdir",  default="results/tests/energy_volume",
-                        help="Output directory")
+    parser.add_argument("--outdir",  default=None,
+                        help="Output directory (default: results/tests/<pot's parent dir "
+                             "name>/energy_volume, e.g. --pot results/potentials/pot_660277/pot.almtp "
+                             "-> results/tests/pot_660277/energy_volume)")
     parser.add_argument("--npoints", type=int,   default=20,
                         help="Number of volume points (default: 20)")
     parser.add_argument("--vrange",  type=float, default=0.30,
@@ -298,10 +300,16 @@ def main() -> None:
         with open(args.config) as f:
             mlp = yaml.safe_load(f)["mlp_binary"]
 
+    if args.outdir is None:
+        run_name = Path(args.pot).resolve().parent.name
+        outdir = Path("results/tests") / run_name / "energy_volume"
+    else:
+        outdir = Path(args.outdir)
+
     run(
         pot=args.pot,
         struct=args.struct,
-        outdir=Path(args.outdir),
+        outdir=outdir,
         npoints=args.npoints,
         vrange=args.vrange,
         backend=args.backend,

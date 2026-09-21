@@ -15,6 +15,7 @@ relaxation steps, where accuracy matters more than throughput):
 
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -101,14 +102,23 @@ def _parse_efs_cfg(path: Path) -> tuple[float, np.ndarray]:
 class MTPLammpsCalculator(Calculator):
     """ASE Calculator that runs one LAMMPS single-point evaluation per call
     (pair_style hybrid/overlay mtp nlh). Same tradeoff as MTPCalculator.
+
+    Each call runs in its own temporary directory that is deleted once the
+    call returns, so none of its LAMMPS input/log files persist. Passing
+    `save_dir` copies that call's `in.lammps`/`log.lammps` out to a fixed
+    location before the temp dir is removed — each call overwrites the
+    previous copy, so `save_dir` ends up with the *last* call's files, kept
+    as a representative sample rather than one pair per call.
     """
 
     implemented_properties = ["energy", "forces"]
 
-    def __init__(self, lammps_cmd: str, pot: str, label: str = "mtp_lammps_calc", **kwargs):
+    def __init__(self, lammps_cmd: str, pot: str, label: str = "mtp_lammps_calc",
+                 save_dir: str | Path | None = None, **kwargs):
         Calculator.__init__(self, label=label, **kwargs)
         self.lammps_cmd = lammps_cmd
         self.pot = str(Path(pot).resolve())
+        self.save_dir = Path(save_dir) if save_dir is not None else None
 
     def calculate(self, atoms=None, properties=None, system_changes=all_changes):
         Calculator.calculate(self, atoms, properties, system_changes)
@@ -135,6 +145,11 @@ class MTPLammpsCalculator(Calculator):
                 raise RuntimeError(
                     f"LAMMPS exited {result.returncode}:\n{result.stderr[-800:]}"
                 )
+
+            if self.save_dir is not None:
+                self.save_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy(workdir / "in.lammps", self.save_dir / "in.lammps")
+                shutil.copy(workdir / "log.lammps", self.save_dir / "log.lammps")
 
             energy = float((workdir / "energy.txt").read_text().split()[0])
             forces = _parse_forces_from_dump(workdir / "force.dump", len(atoms))

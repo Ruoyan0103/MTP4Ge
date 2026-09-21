@@ -174,15 +174,24 @@ def main() -> None:
     parser.add_argument("--box-size", type=float, default=40.0,
                         help="Cubic box edge length Å — must be well beyond the MTP cutoff "
                              "so periodic images don't interact (default: 40.0)")
-    parser.add_argument("--outdir", default="results/tests/dimer_curve", help="Output directory")
+    parser.add_argument("--outdir", default=None,
+                        help="Output directory (default: results/tests/<pot's parent dir "
+                             "name>/dimer_curve, e.g. --pot results/potentials/pot_660277/pot.almtp "
+                             "-> results/tests/pot_660277/dimer_curve)")
     parser.add_argument("--lammps", default=DEFAULT_LAMMPS,
                         help="LAMMPS command, e.g. 'srun /path/to/lmp_mpi' "
                              f"(default: {DEFAULT_LAMMPS})")
     args = parser.parse_args()
 
+    if args.outdir is None:
+        run_name = Path(args.pot).resolve().parent.name
+        outdir = Path("results/tests") / run_name / "dimer_curve"
+    else:
+        outdir = Path(args.outdir)
+
     run(
         pot=args.pot,
-        outdir=Path(args.outdir),
+        outdir=outdir,
         lammps_cmd=args.lammps,
         r_min=args.r_min,
         r_max=args.r_max,

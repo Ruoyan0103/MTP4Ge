@@ -273,7 +273,10 @@ def main() -> None:
                         help="Supercell repeat (8·n³ atoms, default: 3→216)")
     parser.add_argument("--rmax", type=float, default=8.0)
     parser.add_argument("--nbins", type=int, default=200)
-    parser.add_argument("--outdir", default="results/tests/amorphous_rdf")
+    parser.add_argument("--outdir", default=None,
+                        help="Output directory (default: results/tests/<pot's parent dir "
+                             "name>/amorphous_rdf, e.g. --pot results/potentials/pot_660277/pot.almtp "
+                             "-> results/tests/pot_660277/amorphous_rdf)")
     parser.add_argument("--lammps", default=LAMMPS_DEFAULT)
     parser.add_argument("--np", type=int, default=1,
                         help="Number of MPI processes (default: 1, wraps with mpirun if >1)")
@@ -287,9 +290,15 @@ def main() -> None:
         print("  NOTE: --quick overrides --quench-rate; using 1e13 K/s")
     quench_rate = 1e13 if args.quick else args.quench_rate
 
+    if args.outdir is None:
+        run_name = Path(args.pot).resolve().parent.name
+        outdir = Path("results/tests") / run_name / "amorphous_rdf"
+    else:
+        outdir = Path(args.outdir)
+
     run(
         pot=args.pot,
-        outdir=Path(args.outdir),
+        outdir=outdir,
         lammps=args.lammps,
         np_cores=args.np,
         n_cells=args.n_cells,

@@ -387,8 +387,10 @@ def main() -> None:
              f"{DEFAULT_LAMMPS_NLH} for --backend lammps-nlh)"
     )
     parser.add_argument(
-        "--outdir", default="results/tests/liquid_rdf",
-        help="Output directory (default: results/tests/liquid_rdf)"
+        "--outdir", default=None,
+        help="Output directory (default: results/tests/<pot's parent dir "
+             "name>/liquid_rdf, e.g. --pot results/potentials/pot_660277/pot.almtp "
+             "-> results/tests/pot_660277/liquid_rdf)"
     )
     parser.add_argument(
         "--rmax", type=float, default=8.0,
@@ -408,9 +410,15 @@ def main() -> None:
     if lammps is None:
         lammps = LAMMPS_DEFAULT if args.backend == "lammps-mlip" else DEFAULT_LAMMPS_NLH
 
+    if args.outdir is None:
+        run_name = Path(args.pot).resolve().parent.name
+        outdir = Path("results/tests") / run_name / "liquid_rdf"
+    else:
+        outdir = Path(args.outdir)
+
     run(
         pot=args.pot,
-        outdir=Path(args.outdir),
+        outdir=outdir,
         lammps=lammps,
         nx=args.nx,
         ny=args.ny,

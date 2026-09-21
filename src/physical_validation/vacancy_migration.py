@@ -226,6 +226,18 @@ def run_neb(
     return barrier, arc, energies
 
 
+def _plot_neb_path(ax, label: str, arc: np.ndarray, energies: np.ndarray, barrier: float) -> None:
+    """Draw one NEB path (ΔE vs arc length) onto a matplotlib Axes."""
+    dE = (energies - energies[0]) * 1000  # convert to meV
+    ax.plot(arc, dE, "o-", color="tab:blue", markersize=5)
+    ax.axhline(0, color="gray", lw=0.8, ls="--")
+    ax.set_xlabel("Arc length (Å)")
+    ax.set_ylabel("ΔE (meV)")
+    ax.set_title(f"{label} hop  [barrier = {barrier * 1000:.0f} meV]")
+    ax.text(0.98, 0.05, f"DFT: {DFT_REF.get(label, 0) * 1000:.0f} meV",
+            transform=ax.transAxes, ha="right", fontsize=9, color="gray")
+
+
 def _find_moving_atom(initial, final) -> int:
     """Return the index of the atom that moves most between initial and final."""
     disp = np.linalg.norm(
@@ -247,7 +259,7 @@ def run(pot: str, outdir: Path, a0: float,
     if backend == "mlp":
         make_calc = lambda: MTPCalculator(mlp=mlp, pot=pot)
     else:
-        make_calc = lambda: MTPLammpsCalculator(lammps_cmd=lammps_cmd, pot=pot)
+        make_calc = lambda: MTPLammpsCalculator(lammps_cmd=lammps_cmd, pot=pot, save_dir=outdir)
 
     neb_results = {}
     for shell, label in [(1, "1NN"), (2, "2NN")]:
@@ -270,6 +282,30 @@ def run(pot: str, outdir: Path, a0: float,
             max_steps=max_steps, image_dir=outdir / label,
         )
         neb_results[label] = (arc, energies, barrier)
+
+        path_dir = outdir / label
+        path_dir.mkdir(parents=True, exist_ok=True)
+        with open(path_dir / "energy.txt", "w") as f:
+            f.write(f"# {label} NEB path — pot: {pot}  barrier = {barrier:.6f} eV\n")
+            f.write("# arc[A]  E[eV]  dE[eV]\n")
+            for s, e in zip(arc, energies):
+                f.write(f"  {s:.4f}  {e:.6f}  {e - energies[0]:.6f}\n")
+        print(f"  Path energies written to {path_dir / 'energy.txt'}")
+
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            fig, ax = plt.subplots(figsize=(5, 4))
+            _plot_neb_path(ax, label, arc, energies, barrier)
+            fig.tight_layout()
+            png = path_dir / "energy.png"
+            fig.savefig(png, dpi=150)
+            plt.close(fig)
+            print(f"  Path plot written to {png}")
+        except ImportError as e:
+            print(f"  Matplotlib not available ({e}); skipping path plot.")
 
         dft = DFT_REF.get(label, float("nan"))
         gap = GAP_REF.get(label, float("nan"))
@@ -310,14 +346,7 @@ def run(pot: str, outdir: Path, a0: float,
         fig, axes = plt.subplots(1, len(neb_results), figsize=(5 * len(neb_results), 4),
                                  squeeze=False)
         for ax, (label, (arc, energies, barrier)) in zip(axes[0], neb_results.items()):
-            dE = (energies - energies[0]) * 1000  # convert to meV
-            ax.plot(arc, dE, "o-", color="tab:blue", markersize=5)
-            ax.axhline(0, color="gray", lw=0.8, ls="--")
-            ax.set_xlabel("Arc length (Å)")
-            ax.set_ylabel("ΔE (meV)")
-            ax.set_title(f"{label} hop  [barrier = {barrier * 1000:.0f} meV]")
-            ax.text(0.98, 0.05, f"DFT: {DFT_REF.get(label, 0) * 1000:.0f} meV",
-                    transform=ax.transAxes, ha="right", fontsize=9, color="gray")
+            _plot_neb_path(ax, label, arc, energies, barrier)
         backend_tag = "" if backend == "mlp" else " (LAMMPS)"
         fig.suptitle(f"Ge Vacancy Migration — MTP{backend_tag}", fontsize=12)
         fig.tight_layout()
@@ -348,7 +377,10 @@ def main() -> None:
                         help="Force threshold for endpoint pre-relaxation eV/Å (default: 0.02)")
     parser.add_argument("--max-steps", type=int, default=200,
                         help="Max BFGS steps (default: 200)")
-    parser.add_argument("--outdir", default="results/tests/vacancy_migration")
+    parser.add_argument("--outdir", default=None,
+                        help="Output directory (default: results/tests/<pot's parent dir "
+                             "name>/vacancy_migration, e.g. --pot results/potentials/pot_660277/pot.almtp "
+                             "-> results/tests/pot_660277/vacancy_migration)")
     parser.add_argument("--backend", choices=["mlp", "lammps"], default="mlp",
                         help="Evaluation engine: 'mlp' calculate_efs (default) or "
                              "'lammps' (pair_style mtp+nlh — for potentials 'mlp' can't load)")
@@ -359,9 +391,15 @@ def main() -> None:
                              f"(--backend lammps only; default: {DEFAULT_LAMMPS})")
     args = parser.parse_args()
 
+    if args.outdir is None:
+        run_name = Path(args.pot).resolve().parent.name
+        outdir = Path("results/tests") / run_name / "vacancy_migration"
+    else:
+        outdir = Path(args.outdir)
+
     run(
         pot=args.pot,
-        outdir=Path(args.outdir),
+        outdir=outdir,
         a0=args.a0,
         n_images=args.n_images,
         fmax=args.fmax,

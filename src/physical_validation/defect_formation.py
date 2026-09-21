@@ -63,7 +63,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
 from utils import _mlp_env, calc_efs, write_bare_cfg, _read_cfg_geometry
-from convert import _parse_all_cfgs
+from convert_format import _parse_all_cfgs, _convert_cfg
 from energy_volume import DEFAULT_LAMMPS, _run_lammps_energy
 
 DEFAULT_TRAIN_CONFIG = "config/training.yaml"
@@ -241,27 +241,6 @@ def _parse_efs(path: Path) -> tuple[float, np.ndarray]:
     return energy, np.array(forces)
 
 
-def cfg_to_xyz(cfg_path: Path, xyz_path: Path | None = None) -> Path:
-    """Convert a CFG file to extended XYZ for viewing in OVITO/VESTA."""
-    from ase.io import write as ase_write
-    if xyz_path is None:
-        xyz_path = cfg_path.with_suffix(".xyz")
-    atoms_list = _parse_all_cfgs(cfg_path)
-    ase_write(str(xyz_path), atoms_list if len(atoms_list) > 1 else atoms_list[0],
-              format="extxyz")
-    return xyz_path
-
-
-def cfg_to_poscar(cfg_path: Path, poscar_path: Path | None = None) -> Path:
-    """Convert a (single-frame) CFG file to a VASP POSCAR for viewing in OVITO/VESTA."""
-    from ase.io import write as ase_write
-    if poscar_path is None:
-        poscar_path = cfg_path.with_suffix(".POSCAR")
-    atoms_list = _parse_all_cfgs(cfg_path)
-    ase_write(str(poscar_path), atoms_list[0], format="vasp")
-    return poscar_path
-
-
 # ---------------------------------------------------------------------------
 # Relaxation via mlp relax (BFGS) — fixed cell or cell+ions, per fix_cell
 # ---------------------------------------------------------------------------
@@ -317,8 +296,8 @@ def _relax_mlp(
     in_cfg  = workdir / "in.cfg"
     out_cfg = workdir / "relaxed.cfg"
     write_bare_cfg([(cell, pos, types)], in_cfg)
-    cfg_to_xyz(in_cfg, workdir / "unrelaxed.xyz")
-    cfg_to_poscar(in_cfg, workdir / "unrelaxed.POSCAR")
+    _convert_cfg(in_cfg, str(workdir / "unrelaxed.xyz"), poscar=False)
+    _convert_cfg(in_cfg, str(workdir / "unrelaxed.POSCAR"), poscar=True)
 
     out_cfg.unlink(missing_ok=True)
     cmd = [mlp, "relax", str(pot), str(in_cfg), str(out_cfg),
@@ -337,8 +316,17 @@ def _relax_mlp(
             f"stderr: {result.stderr[-500:] if result.stderr else '(empty)'}"
         )
 
-    cfg_to_xyz(out_cfg)
-    cfg_to_poscar(out_cfg)
+    if "BEGIN_CFG" not in out_cfg.read_text():
+        log_actual = log if log.exists() else Path(str(log) + ".0")
+        log_tail = "\n".join(log_actual.read_text().splitlines()[-5:]) if log_actual.exists() else "(no log)"
+        raise RuntimeError(
+            f"mlp relax produced no valid CFG at {out_cfg} — relaxation likely "
+            f"diverged (atoms collapsed / energy blew up)\n"
+            f"last log lines:\n{log_tail}"
+        )
+
+    _convert_cfg(out_cfg, None, poscar=False)
+    _convert_cfg(out_cfg, None, poscar=True)
 
     energy, forces = _parse_efs(out_cfg)
     rlx_cell, rlx_pos, _ = _read_cfg_geometry(out_cfg)
@@ -556,7 +544,7 @@ def run(pot: str, outdir: Path, a0: float,
             results[name] = {"n": n_def, "E_total": e_def, "E_f": e_f}
             dft_str = f"  (DFT ref: {DFT_REF[name]:.2f} eV)" if name in DFT_REF else ""
             print(f"    E_f = {e_f:.3f} eV{dft_str}")
-        except RuntimeError as exc:
+        except Exception as exc:
             print(f"    FAILED: {exc}")
             results[name] = {"n": n_def, "E_total": None, "E_f": None}
 
@@ -635,8 +623,10 @@ def main() -> None:
     parser.add_argument("--supercell",  type=int, nargs=3, default=list(SUPERCELL),
                         metavar=("NX", "NY", "NZ"),
                         help=f"Conventional-cell repeat count (default: {list(SUPERCELL)})")
-    parser.add_argument("--outdir",     default="results/tests/defect_formation",
-                        help="Output directory")
+    parser.add_argument("--outdir",     default=None,
+                        help="Output directory (default: results/tests/<pot's parent dir "
+                             "name>/defect_formation, e.g. --pot results/potentials/pot_660277/pot.almtp "
+                             "-> results/tests/pot_660277/defect_formation)")
     parser.add_argument("--backend",    choices=["mlp", "lammps"], default="mlp",
                         help="Evaluation engine: 'mlp' relax/calculate_efs (default) or "
                              "'lammps' (pair_style mtp+nlh — for potentials 'mlp' can't load)")
@@ -654,9 +644,15 @@ def main() -> None:
         with open(args.config) as f:
             mlp = yaml.safe_load(f)["mlp_binary"]
 
+    if args.outdir is None:
+        run_name = Path(args.pot).resolve().parent.name
+        outdir = Path("results/tests") / run_name / "defect_formation"
+    else:
+        outdir = Path(args.outdir)
+
     run(
         pot=args.pot,
-        outdir=Path(args.outdir),
+        outdir=outdir,
         a0=args.a0,
         fmax=args.fmax,
         max_steps=args.max_steps,

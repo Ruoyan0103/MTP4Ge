@@ -61,9 +61,9 @@ python src/physical_validation/vacancy_migration.py \
     --pot "$POT" \
     --backend lammps \
     --lammps "$LAMMPS_BIN" \
-    --outdir results/tests/vacancy_migration_lammps \
+    --outdir results/tests/pot_660277/vacancy_migration \
     "$@"
 
 echo "=== Done ==="
-echo "  Output : $(realpath results/tests/vacancy_migration_lammps 2>/dev/null || echo results/tests/vacancy_migration_lammps)"
+echo "  Output : $(realpath results/tests/pot_660277/vacancy_migration 2>/dev/null || echo results/tests/pot_660277/vacancy_migration)"
 date

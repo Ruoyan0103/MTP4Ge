@@ -1,15 +1,19 @@
 """
 Analyze an MLIP-3 CFG database and save one figure (named after the input
-CFG, e.g. train-tgap.png for train-tgap.cfg) with a 2x3 grid of stacked
-histograms: energy per atom, per-atom force
-magnitude, and per-structure mean normal stress (columns), each shown twice
-(rows) at two grouping granularities inferred from the `Feature type` tag
-already present in the file:
-  row 1 (coarse) - thermal, elastic, othertypes (bcc/bc8/fcc/hcp/hd/betaTin/
-                   st12 combined), defects (V/X/T/H/B combined), liquids.
-  row 2 (detail) - only the othertypes/defects members, each kept separate
-                   (bcc, bc8, fcc, hcp, hd, betaTin, st12, V, X, T, H, B);
-                   thermal/elastic/liquids structures are dropped, not shown.
+CFG, e.g. train-tgap.png for train-tgap.cfg) with stacked histograms of
+energy per atom, per-atom force magnitude, and per-structure mean normal
+stress (columns), grouped by the `Feature type` tag already present in the
+file. The number of rows depends on whether the CFG contains any
+othertypes/defects members (bcc, bc8, fcc, hcp, hd, betaTin, st12, V, X, T,
+H, B):
+  - if present: a 2x3 grid -
+      row 1 (coarse) - thermal, elastic, othertypes (bcc/bc8/fcc/hcp/hd/
+                       betaTin/st12 combined), defects (V/X/T/H/B combined),
+                       liquids.
+      row 2 (detail) - only the othertypes/defects members, each kept
+                       separate; thermal/elastic/liquids structures are
+                       dropped, not shown.
+  - otherwise: a single 1x3 row using only the coarse grouping.
 `FTYPE_GROUP_COARSE`/`FTYPE_GROUP_DETAIL` map the tag values used in
 data/train-tgap.cfg (vac, phonon, diamond, bcc, bc8, fcc, hcp, hd, betaTin,
 st12, tet, split, hex, bond, liquid) to a display group; anything unmapped
@@ -83,13 +87,13 @@ class Grouping:
 
 # -- Fine grouping: every structure type kept separate -----------------------
 GROUP_ORDER_FINE = [
-    "thermal", "elastic", "bcc", "bc8", "fcc", "hcp", "hd", "betaTin", "st12",
+    "phonon", "elastic", "bcc", "bc8", "fcc", "hcp", "hd", "betaTin", "st12",
     "V", "X", "T", "H", "B", "liquids", "other",
 ]
 
 FTYPE_GROUP_FINE = {
     "vac": "V",
-    "phonon": "thermal",
+    "phonon": "phonon",
     "diamond": "elastic",
     "bcc": "bcc",
     "bc8": "bc8",
@@ -107,11 +111,11 @@ FTYPE_GROUP_FINE = {
 
 # -- Coarse grouping: bcc/bc8/fcc/hcp/hd/betaTin/st12 -> othertypes; ---------
 # -- V/X/T/H/B -> defects ----------------------------------------------------
-GROUP_ORDER_COARSE = ["thermal", "elastic", "othertypes", "defects", "liquids", "other"]
+GROUP_ORDER_COARSE = ["phonon", "elastic", "othertypes", "defects", "liquids", "other"]
 
 FTYPE_GROUP_COARSE = {
     "vac": "defects",
-    "phonon": "thermal",
+    "phonon": "phonon",
     "diamond": "elastic",
     "bcc": "othertypes",
     "bc8": "othertypes",
@@ -443,6 +447,16 @@ def plot_grouped_stress_histogram(
     return counts, group_totals, mean_stress
 
 
+def _has_detail_groups(cfg_path):
+    """True if the CFG has any structures classified into GROUPING_DETAIL
+    (i.e. defects or othertypes members), meaning the detail row is non-empty."""
+    structures = _parse_cfg(cfg_path)
+    return any(
+        GROUPING_DETAIL.classify(struct["features"]) is not None
+        for struct in structures
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -465,39 +479,49 @@ def main():
     parser.set_defaults(log_scale=True)
     args = parser.parse_args()
 
+    if not Path(args.cfg_path).exists():
+        parser.error(f"cfg_path does not exist: {args.cfg_path}")
+
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     out_path = outdir / f"{Path(args.cfg_path).stem}.png"
 
-    fig, ((ax_e0, ax_f0, ax_s0), (ax_e1, ax_f1, ax_s1)) = plt.subplots(2, 3, figsize=(21, 12))
+    has_detail = _has_detail_groups(args.cfg_path)
 
-    # Row 1: coarse grouping (othertypes / defects combined)
-    plot_grouped_energy_histogram(
+    if has_detail:
+        fig, ((ax_e0, ax_f0, ax_s0), (ax_e1, ax_f1, ax_s1)) = plt.subplots(2, 3, figsize=(21, 12))
+    else:
+        fig, (ax_e0, ax_f0, ax_s0) = plt.subplots(1, 3, figsize=(21, 6))
+
+    # Row 1 (or only row, if no defects/othertypes subgroups are present):
+    # coarse grouping (othertypes / defects combined)
+    _, _, mean_e = plot_grouped_energy_histogram(
         args.cfg_path, args.energy_bin_width, log_scale=args.log_scale,
         show_mean=args.show_mean, ax=ax_e0, grouping=GROUPING_COARSE,
     )
-    plot_grouped_force_histogram(
+    _, _, mean_f = plot_grouped_force_histogram(
         args.cfg_path, args.force_bin_width, log_scale=args.log_scale,
         show_mean=args.show_mean, ax=ax_f0, grouping=GROUPING_COARSE,
     )
-    plot_grouped_stress_histogram(
+    _, _, mean_s = plot_grouped_stress_histogram(
         args.cfg_path, args.stress_bin_width, log_scale=args.log_scale,
         show_mean=args.show_mean, ax=ax_s0, grouping=GROUPING_COARSE,
     )
 
-    # Row 2: detail grouping (only othertypes/defects members, each separate)
-    _, _, mean_e = plot_grouped_energy_histogram(
-        args.cfg_path, args.energy_bin_width, log_scale=args.log_scale,
-        show_mean=args.show_mean, ax=ax_e1, grouping=GROUPING_DETAIL,
-    )
-    _, _, mean_f = plot_grouped_force_histogram(
-        args.cfg_path, args.force_bin_width, log_scale=args.log_scale,
-        show_mean=args.show_mean, ax=ax_f1, grouping=GROUPING_DETAIL,
-    )
-    _, _, mean_s = plot_grouped_stress_histogram(
-        args.cfg_path, args.stress_bin_width, log_scale=args.log_scale,
-        show_mean=args.show_mean, ax=ax_s1, grouping=GROUPING_DETAIL,
-    )
+    if has_detail:
+        # Row 2: detail grouping (only othertypes/defects members, each separate)
+        _, _, mean_e = plot_grouped_energy_histogram(
+            args.cfg_path, args.energy_bin_width, log_scale=args.log_scale,
+            show_mean=args.show_mean, ax=ax_e1, grouping=GROUPING_DETAIL,
+        )
+        _, _, mean_f = plot_grouped_force_histogram(
+            args.cfg_path, args.force_bin_width, log_scale=args.log_scale,
+            show_mean=args.show_mean, ax=ax_f1, grouping=GROUPING_DETAIL,
+        )
+        _, _, mean_s = plot_grouped_stress_histogram(
+            args.cfg_path, args.stress_bin_width, log_scale=args.log_scale,
+            show_mean=args.show_mean, ax=ax_s1, grouping=GROUPING_DETAIL,
+        )
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
