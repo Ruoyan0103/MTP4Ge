@@ -101,9 +101,98 @@ def _bare_atoms(frames):
     return bare
 
 
-def run_predict(frames: list, workdir: Path, turbogap: str) -> Path:
+def _run_turbogap_inline(workdir: Path, turbogap_command: str) -> None:
+    """Run `turbogap predict` directly as a subprocess, using the caller's
+    current allocation (e.g. turbogap_command already prefixed with srun)."""
+    cmd = shlex.split(turbogap_command) + ["predict"]
+    result = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
+    (workdir / "turbogap.log").write_text(result.stdout + result.stderr)
+    if result.returncode != 0:
+        print(result.stdout[-2000:], file=sys.stderr)
+        print(result.stderr[-2000:], file=sys.stderr)
+        raise RuntimeError(
+            f"turbogap predict failed (exit {result.returncode}); see {workdir / 'turbogap.log'}"
+        )
+
+
+def _submit_turbogap_sbatch(workdir: Path, turbogap_command: str, gap_settings: dict) -> None:
+    """Submit `turbogap predict` (atoms_in.xyz/input already written in workdir)
+    as its own SLURM job via `sbatch --wait`, and block until it finishes.
+
+    Unlike VASP's per-structure array job (_submit_vasp_array_and_wait in
+    active_learning.py), turbogap predict runs once over all structures, so
+    this is a single job — no array, no squeue polling needed; `sbatch --wait`
+    blocks and exits with the job's own exit code.
+    """
+    account   = gap_settings.get("slurm_account", "")
+    partition = gap_settings.get("slurm_partition", "small")
+    time_tg   = gap_settings.get("slurm_time_turbogap", "01:00:00")
+    ntasks    = int(gap_settings.get("slurm_ntasks_turbogap", 1))
+    setup     = gap_settings.get("slurm_setup_turbogap", "")
+
+    account_line = f"#SBATCH --account={account}" if account else ""
+    abs_workdir = workdir.resolve()
+    script_path = workdir / "turbogap_job.sh"
+    script_path.write_text(f"""\
+#!/bin/bash -l
+#SBATCH --job-name=turbogap_predict
+{account_line}
+#SBATCH --partition={partition}
+#SBATCH --time={time_tg}
+#SBATCH --ntasks={ntasks}
+#SBATCH --output=job.out
+#SBATCH --error=job.err
+
+{setup}
+
+export OMP_NUM_THREADS=1
+
+# This sbatch call runs from inside the AL driver's own SLURM job. SLURM_*
+# variables are always propagated into a new job's environment regardless of
+# --export (see `man sbatch`), so the driver job's own SLURM_MEM_PER_CPU
+# survives here alongside whatever memory variable (e.g. SLURM_MEM_PER_NODE)
+# this job's own allocation sets — srun then refuses to start because they're
+# mutually exclusive. Unset them so only this job's own allocation applies.
+unset SLURM_MEM_PER_CPU SLURM_MEM_PER_GPU SLURM_MEM_PER_NODE
+
+cd "{abs_workdir}"
+{turbogap_command} predict
+""")
+
+    cmd = ["sbatch", "--wait", str(abs_workdir / "turbogap_job.sh")]
+    print(f"  Submitting turbogap SLURM job: {' '.join(cmd)}")
+    result = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
+
+    log_parts = [p.read_text() for p in (workdir / "job.out", workdir / "job.err") if p.exists()]
+    (workdir / "turbogap.log").write_text("".join(log_parts))
+
+    if result.returncode != 0:
+        # job.out/job.err only exist if the job actually started; a failure
+        # here (e.g. transient slurmctld error) happens at the `sbatch`
+        # submission step itself, so the real reason is in sbatch's own
+        # stdout/stderr, not in turbogap.log.
+        raise RuntimeError(
+            f"turbogap SLURM job failed (exit {result.returncode}); "
+            f"sbatch stdout: {result.stdout.strip()!r}; sbatch stderr: {result.stderr.strip()!r}; "
+            f"see {workdir / 'turbogap.log'}"
+        )
+    print(f"  {result.stdout.strip()}")
+
+
+def run_predict(frames: list, workdir: Path, gap_settings: dict) -> Path:
     """Run `turbogap predict` on frames (already-loaded ASE Atoms) inside
-    workdir; returns the path to the raw trajectory_out.xyz it writes."""
+    workdir; returns the path to the raw trajectory_out.xyz it writes.
+
+    gap_settings:
+      turbogap_command : binary/launch command, 'predict' is appended here,
+                          not part of the command (default: srun {DEFAULT_TURBOGAP})
+      turbogap_mode     : 'inline' (default) — run directly as a subprocess
+                          using the caller's current allocation; 'sbatch' —
+                          submit as its own SLURM job (blocks until done, see
+                          slurm_* keys below)
+      slurm_account, slurm_partition, slurm_time_turbogap, slurm_ntasks_turbogap,
+      slurm_setup_turbogap : SLURM job settings, used only when turbogap_mode=sbatch
+    """
     workdir.mkdir(parents=True, exist_ok=True)
 
     gap_copy = workdir / "gap_files"
@@ -118,15 +207,14 @@ def run_predict(frames: list, workdir: Path, turbogap: str) -> Path:
         )
     )
 
-    cmd = shlex.split(turbogap) + ["predict"]
-    result = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
-    (workdir / "turbogap.log").write_text(result.stdout + result.stderr)
-    if result.returncode != 0:
-        print(result.stdout[-2000:], file=sys.stderr)
-        print(result.stderr[-2000:], file=sys.stderr)
-        raise RuntimeError(
-            f"turbogap predict failed (exit {result.returncode}); see {workdir / 'turbogap.log'}"
-        )
+    turbogap_command = gap_settings.get("turbogap_command", f"srun {DEFAULT_TURBOGAP}")
+    turbogap_mode = gap_settings.get("turbogap_mode", "inline")
+    if turbogap_mode == "sbatch":
+        _submit_turbogap_sbatch(workdir, turbogap_command, gap_settings)
+    elif turbogap_mode == "inline":
+        _run_turbogap_inline(workdir, turbogap_command)
+    else:
+        raise ValueError(f"unknown turbogap_mode {turbogap_mode!r} (expected 'inline' or 'sbatch')")
 
     out = workdir / "trajectory_out.xyz"
     if not out.exists():
@@ -168,7 +256,7 @@ def tag_with_gap(input_xyz: Path, outdir: Path, workdir: Path, turbogap: str) ->
     orig_frames = read(str(input_xyz), index=":")
     print(f"Re-evaluating {input_xyz} with GAP potential ({POT_FILE}): {len(orig_frames)} configuration(s)")
 
-    traj_out = run_predict(orig_frames, workdir, turbogap)
+    traj_out = run_predict(orig_frames, workdir, {"turbogap_command": turbogap})
     gap_frames = read(str(traj_out), index=":")
     if len(gap_frames) != len(orig_frames):
         raise RuntimeError(

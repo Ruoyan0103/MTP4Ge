@@ -75,7 +75,7 @@ def write_liquid_input(
     steps_nvt: int = 2_000,
     seed: int = 12345,
     dump_every: int = 100,
-    backend: str = "lammps-mlip",
+    backend: str = "lammps-nlh",
 ) -> int:
     """Write LAMMPS input for liquid Ge NPT→NVT MD.
 
