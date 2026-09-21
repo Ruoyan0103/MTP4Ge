@@ -763,8 +763,11 @@ def main() -> None:
     parser.add_argument("--a0", type=float, default=5.7567,
                         help="Diamond lattice constant in A (default: 5.7567, MTP eq.)")
 
-    parser.add_argument("--outdir", default="results/tests/melting_point",
-                        help="Output directory")
+    parser.add_argument("--outdir", default=None,
+                        help="Output directory (default: results/tests/<pot's parent dir "
+                             "name>/melting_point, e.g. --pot results/potentials/pot_660277/pot.almtp "
+                             "-> results/tests/pot_660277/melting_point; falls back to "
+                             "results/tests/melting_point if --pot is omitted with --aggregate)")
     parser.add_argument("--quick", action="store_true",
                         help="Quick test: 4x4x8 cell, 1 repeat, short runs")
     parser.add_argument("--no-verify-melting", action="store_true",
@@ -789,9 +792,18 @@ def main() -> None:
         steps_melt = args.steps_melt
         steps_coexist = args.steps_coexist
 
+    if args.outdir is None:
+        if args.pot is not None:
+            run_name = Path(args.pot).resolve().parent.name
+            outdir = Path("results/tests") / run_name / "melting_point"
+        else:
+            outdir = Path("results/tests/melting_point")
+    else:
+        outdir = Path(args.outdir)
+
     run(
         pot=args.pot,
-        outdir=Path(args.outdir),
+        outdir=outdir,
         lammps=args.lammps,
         np_cores=args.np,
         n_repeats=n_repeats,

@@ -402,7 +402,12 @@ def main() -> None:
         description="Multi-phase E-V curves for Ge MTP potential"
     )
     parser.add_argument("--pot", required=True, help="Path to potential (.almtp)")
-    parser.add_argument("--outdir", default="results/tests/multiphase_ev")
+    parser.add_argument(
+        "--outdir", default=None,
+        help="Output directory (default: results/tests/<pot's parent dir "
+             "name>/multiphase_ev, e.g. --pot results/potentials/pot_660277/pot.almtp "
+             "-> results/tests/pot_660277/multiphase_ev)",
+    )
     parser.add_argument("--n-volumes", type=int, default=21,
                         help="Number of volume points per phase (default: 21)")
     parser.add_argument("--vol-range", type=float, default=0.70,
@@ -422,9 +427,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.outdir is None:
+        run_name = Path(args.pot).resolve().parent.name
+        outdir = Path("results/tests") / run_name / "multiphase_ev"
+    else:
+        outdir = Path(args.outdir)
+
     run(
         pot=args.pot,
-        outdir=Path(args.outdir),
+        outdir=outdir,
         n_volumes=args.n_volumes,
         vol_range=args.vol_range,
         dft_dir=args.dft_data,

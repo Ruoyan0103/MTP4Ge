@@ -94,7 +94,7 @@ echo "  Training set    : $N_TRAIN configs"
 echo ""
 echo "=== Evaluating errors on final potential ==="
 DATE=$(date +%Y-%m-%d)
-bash scripts/save/02_test_errors.sh "$AL_POT" errors \
+bash scripts/save/02_test_errors.sh "$AL_POT" \
     "data/train-${DATE}.cfg" \
     "data/val-${DATE}.cfg" \
     "data/test-${DATE}.cfg"

@@ -726,8 +726,10 @@ def main() -> None:
                         help="q-points per path segment (default: 11)")
     parser.add_argument("--dos-mesh", type=int, default=30,
                         help="Uniform q-mesh size for DOS (default: 30 → 30×30×30)")
-    parser.add_argument("--outdir", default="results/tests/phonon_dispersion",
-                        help="Output directory")
+    parser.add_argument("--outdir", default=None,
+                        help="Output directory (default: results/tests/<pot's parent dir "
+                             "name>/phonon_dispersion, e.g. --pot results/potentials/pot_660277/pot.almtp "
+                             "-> results/tests/pot_660277/phonon_dispersion)")
     parser.add_argument("--config", default=DEFAULT_TRAIN_CONFIG,
                         help="Training YAML config (provides mlp_binary)")
     parser.add_argument("--mlp", default=None,
@@ -761,9 +763,15 @@ def main() -> None:
         elif args.method == "lammps-nlh":
             lammps_cmd = DEFAULT_LAMMPS_NLH
 
+    if args.outdir is None:
+        run_name = Path(args.pot).resolve().parent.name
+        outdir = Path("results/tests") / run_name / "phonon_dispersion"
+    else:
+        outdir = Path(args.outdir)
+
     run(
         pot=args.pot,
-        outdir=Path(args.outdir),
+        outdir=outdir,
         alat=args.alat,
         supercell_size=args.supercell,
         displacement=args.displacement,

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src" / "utils"))
 
 from ase.io import read as ase_read
-from convert import write_cfg
+from convert_format import write_cfg
 
 
 def main() -> None:

@@ -42,9 +42,13 @@ sbatch scripts/submit_train.sh          # SLURM (1 node, 1 task, 30 min)
 
 ### Step 2 — Evaluate errors
 ```bash
-bash scripts/save/02_test_errors.sh [pot.mtp] [errors|efs]
-# errors → mlp check_errors (RMSE);  efs → mlp calculate_efs (per-config)
-# Reports in results/errors/
+bash scripts/save/02_test_errors.sh [pot.mtp] [train.cfg] [val.cfg] [test.cfg]
+# mlp check_errors (RMSE for energy, forces, stresses)
+# Reports: results/errors/<pot_stem>/<cfg_stem>.txt
+
+# For potentials whose radial basis type `mlp` can't load ("Wrong radial basis
+# type"), evaluate via LAMMPS instead (energy, forces, and stress):
+sbatch scripts/submit_check_errors.sh [pot.mtp] [date]
 ```
 
 ### Step 3 — Active learning loop
@@ -131,15 +135,15 @@ sbatch scripts/submit_train.sh
 ### Source modules
 - `src/train.py` — thin wrapper around `mlp train`; all hyperparameters from `config/training.yaml`.
 - `src/active_learning.py` — full MLIP-2 tutorial-2 loop (steps A–E). CLI flags: `--pot`, `--max-iter`, `--structure` (overrides `lammps_structure` in YAML), `--al-pot` (explicit output path, prevents suffix-chaining), `--temperature` (overrides `temperature` in YAML). `_IDX_TO_SYMBOL` is the reverse of `SPECIES_MAP` (in `src/utils/convert.py`) and must stay in sync with it.
-- `src/test_errors.py` — wraps `mlp check_errors` / `mlp calculate_efs`.
 
 ### Utils (`src/utils/`)
-Holds shared code imported by nearly every module under `src/physical_validation/` (each of those adds `src/utils/` to `sys.path` alongside its own directory), plus `convert.py`, imported the same way by `src/active_learning.py`, `src/physical_validation/defect_formation.py`, and `scripts/save/collect_thermal_iter.py`.
+Holds shared code imported by nearly every module under `src/physical_validation/` (each of those adds `src/utils/` to `sys.path` alongside its own directory), plus `convert.py`, imported the same way by `src/active_learning.py`, `src/physical_validation/defect_formation.py`, and `scripts/save/collect_thermal_iter.py`. Also holds standalone CLI scripts, like `check_errors.py`, that aren't imported elsewhere but are grouped here alongside the shared code they depend on.
 
 - `src/utils/convert.py` — CLI requires explicit `--from {xyz,dump,cfg,poscar}` and `--to {cfg,xyz,poscar}` (no defaults; unsupported pairs error out). Supported pairs: `xyz→cfg` reads extended XYZ via ASE, writes MLIP-3 CFG with energy/forces (`write_cfg`); `SPECIES_MAP` maps element symbol → integer type index; configs without `free_energy` are silently skipped; energy written to CFG is `free_energy` (not `energy`). `dump→cfg` reads a LAMMPS trajectory dump, writes a bare CFG with zero forces/no energy (`write_dump_cfg`, via `parse_dump`) for `mlp calculate_grade`. `cfg→xyz`/`cfg→poscar` parse CFG blocks (`_parse_all_cfgs`, symbols from the reverse of `SPECIES_MAP`) and write extended XYZ (readable by VESTA/OVITO) or a VASP POSCAR (first frame only); reused by `defect_formation.py`. `poscar→cfg` reads a VASP POSCAR/CONTCAR file (or recursively finds them under a directory) and writes a bare geometry-only CFG via `write_bare_cfg` (from `src/utils/utils.py`).
 - `src/utils/utils.py` — shared helpers: `load_structure` (CFG/XYZ/LAMMPS data → cell+positions+types; defaults to 2-atom Ge diamond), `write_bare_cfg`, `calc_efs`, `compute_rdf`, `read_lammps_dump`, `coordination_number`. Sets `LD_LIBRARY_PATH` for OpenBLAS via `_mlp_env()`.
 - `src/utils/mtp_calculator.py` — `MTPCalculator` (wraps `mlp calculate_efs`) and `MTPLammpsCalculator` (wraps LAMMPS `pair_style hybrid/overlay mtp nlh`, via `config/lammps/phonon_dispersion_mtp.in`): ASE `Calculator` subclasses, one subprocess per evaluation; intended for NEB images and small-cell relaxations.
 - `src/utils/test_mtp_calculator.py` — pytest smoke test: `MTPCalculator` returns a float energy and near-zero forces on perfect diamond. `MTP_POT` env var overrides the default potential path.
+- `src/utils/check_errors.py` — invoked as `python src/utils/check_errors.py` (see `scripts/save/02_test_errors.sh`); compares each config's predicted E/F/stress against the values already embedded in the reference CFG and writes an RMSE report to `results/errors/<pot_stem>/<cfg_stem>.txt` (`--outdir` overrides the `results/errors` base). `--backend mlp` (default) wraps `mlp check_errors` directly. `--backend lammps` instead runs one LAMMPS single-point evaluation per config via a caller-supplied `--lammps` command and `--lammps-template` — for potentials whose radial basis type `mlp` can't load; neither is hardcoded in the script, see `scripts/submit_check_errors.sh` for the cluster-specific values (LAMMPS binary, `config/lammps/phonon_dispersion_mtp.in`). Energy/forces come straight from LAMMPS; stress is derived from LAMMPS's pressure tensor after the same single-point run (see the module docstring for the sign/unit convention). Both backends report the same categories (Energy, Energy per atom, Forces, Stresses, Virial stresses) in the same format.
 
 ### Physical validation (`src/physical_validation/`)
 Property-calculation/QA scripts that evaluate a trained potential against DFT/experimental references — not software unit tests. Most accept `--backend {mlp,lammps}` (or, for `phonon_dispersion.py`/`liquid_rdf.py`, a finer-grained `--method`/`--backend` with an `-mlip`/`-nlh` split — see each file's docstring): `mlp` (default) evaluates via `mlp calculate_efs`/`mlp relax`; the LAMMPS backend runs `pair_style hybrid/overlay mtp nlh` instead, for potentials trained with a radial basis type the `mlp` backend can't load ("Wrong radial basis type"). The two backends share all structure-building/reference-loading code within each file so they can't drift apart.

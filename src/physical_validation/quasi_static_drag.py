@@ -426,7 +426,10 @@ def main() -> None:
                         help="Displacement per step in Å (default: 0.3)")
     parser.add_argument("--max-disp", type=float, default=2.0,
                         help="Max displacement per direction in Å (default: 2.0)")
-    parser.add_argument("--outdir", default="results/tests/quasi_static_drag")
+    parser.add_argument("--outdir", default=None,
+                        help="Output directory (default: results/tests/<pot's parent dir "
+                             "name>/quasi_static_drag, e.g. --pot results/potentials/pot_660277/pot.almtp "
+                             "-> results/tests/pot_660277/quasi_static_drag)")
     parser.add_argument("--backend", choices=["mlp", "lammps"], default="mlp",
                         help="Evaluation engine: 'mlp' calculate_efs (default) or "
                              "'lammps' (pair_style mtp+nlh — for potentials 'mlp' can't load)")
@@ -437,9 +440,15 @@ def main() -> None:
                              f"(--backend lammps only; default: {DEFAULT_LAMMPS})")
     args = parser.parse_args()
 
+    if args.outdir is None:
+        run_name = Path(args.pot).resolve().parent.name
+        outdir = Path("results/tests") / run_name / "quasi_static_drag"
+    else:
+        outdir = Path(args.outdir)
+
     run(
         pot=args.pot,
-        outdir=Path(args.outdir),
+        outdir=outdir,
         a0=args.a0,
         n_steps=args.n_steps,
         step_size=args.step_size,

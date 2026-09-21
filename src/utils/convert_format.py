@@ -19,13 +19,13 @@ Supported (--from, --to) pairs:
                    or CONTCAR.
 
 Usage:
-    python src/utils/convert.py --from xyz --to cfg --input <file.xyz> --outdir data/
-    python src/utils/convert.py --from dump --to cfg --input results/active_learning/iter_001/dump.lammpstrj
-    python src/utils/convert.py --from dump --to cfg --input dump.lammpstrj --output candidates.cfg --stride 10
-    python src/utils/convert.py --from cfg --to xyz --input data/train.cfg [--output out.xyz]
-    python src/utils/convert.py --from cfg --to poscar --input data/train.cfg
-    python src/utils/convert.py --from poscar --to cfg --input data/AL/Int
-    python src/utils/convert.py --from poscar --to cfg --input data/AL/Int/B/POSCAR
+    python src/utils/convert_format.py --from xyz --to cfg --input <file.xyz> --outdir data/
+    python src/utils/convert_format.py --from dump --to cfg --input results/active_learning/iter_001/dump.lammpstrj
+    python src/utils/convert_format.py --from dump --to cfg --input dump.lammpstrj --output candidates.cfg --stride 10
+    python src/utils/convert_format.py --from cfg --to xyz --input data/train.cfg [--output out.xyz]
+    python src/utils/convert_format.py --from cfg --to poscar --input data/train.cfg
+    python src/utils/convert_format.py --from poscar --to cfg --input data/AL/Int
+    python src/utils/convert_format.py --from poscar --to cfg --input data/AL/Int/B/POSCAR
 """
 
 import argparse

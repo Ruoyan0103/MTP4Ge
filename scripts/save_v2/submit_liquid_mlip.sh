@@ -10,13 +10,14 @@
 #SBATCH --output=logs/liquid_%j.out
 #SBATCH --error=logs/liquid_%j.err
 #
-# Liquid Ge RDF via LAMMPS NPT→NVT + MTP.
+# Liquid Ge RDF via LAMMPS NPT→NVT + MTP, using pair_style mlip
+# (src/physical_validation/liquid_rdf.py --backend lammps-mlip, the default).
 #
 # Usage:
-#   sbatch scripts/submit_liquid.sh                                    # default pot
-#   sbatch scripts/submit_liquid.sh results/potentials/my_pot.almtp    # custom pot
-#   sbatch scripts/submit_liquid.sh results/potentials/my_pot.almtp --steps-npt 40000 --steps-nvt 20000
-#   sbatch scripts/submit_liquid.sh results/potentials/my_pot.almtp --nx 6 --ny 6 --nz 6
+#   sbatch scripts/submit_liquid_mlip.sh                                    # default pot
+#   sbatch scripts/submit_liquid_mlip.sh results/potentials/my_pot.almtp    # custom pot
+#   sbatch scripts/submit_liquid_mlip.sh results/potentials/my_pot.almtp --steps-npt 40000 --steps-nvt 20000
+#   sbatch scripts/submit_liquid_mlip.sh results/potentials/my_pot.almtp --nx 6 --ny 6 --nz 6
 #
 # Protocol:  NPT equil (1500 K / 1 bar) → NVT production → RDF
 

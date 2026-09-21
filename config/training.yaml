@@ -2,11 +2,8 @@
 # All paths are relative to the repository root.
 
 mlp_binary: /scratch/project_2012355/Paper_3/mlip-3-prune/bin/mlp
-mlp_mpi_binary: srun -n 20 /scratch/project_2012355/Paper_3/mlip-3-prune/bin/mlp
 
-mtp_template: mtp_templates/08.almtp
-train_cfg: data/train-2026-07-28.cfg
-output_potential: results/potentials/pot-2026-07-28.almtp
+mtp_template: mtp_templates/20.almtp
 
 # Training hyperparameters
 iteration_limit: 2000
@@ -28,6 +25,3 @@ weight_scaling_forces: 1
 
 # Randomize initial MTP parameters (true recommended when training from scratch)
 init_random: true
-
-log_path: logs/pot-2026-07-28.log
- 

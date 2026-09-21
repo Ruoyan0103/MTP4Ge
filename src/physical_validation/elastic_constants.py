@@ -359,8 +359,10 @@ def main() -> None:
     parser.add_argument("--lattice-constant", type=float, default=5.76,
                         help="Lattice constant in Å for default Ge diamond structure "
                              "(default: 5.76 exp.; use MTP equilibrium a0 from E-V test)")
-    parser.add_argument("--outdir", default="results/tests/elastic_constants",
-                        help="Output directory")
+    parser.add_argument("--outdir", default=None,
+                        help="Output directory (default: results/tests/<pot's parent dir "
+                             "name>/elastic_constants, e.g. --pot results/potentials/pot_660277/pot.almtp "
+                             "-> results/tests/pot_660277/elastic_constants)")
     parser.add_argument("--config", default=DEFAULT_TRAIN_CONFIG,
                         help="Training YAML config (provides mlp_binary)")
     parser.add_argument("--mlp",    default=None,
@@ -385,10 +387,16 @@ def main() -> None:
         with open(args.al_config) as f:
             lammps_cmd = yaml.safe_load(f)["lammps_binary"]
 
+    if args.outdir is None:
+        run_name = Path(args.pot).resolve().parent.name
+        outdir = Path("results/tests") / run_name / "elastic_constants"
+    else:
+        outdir = Path(args.outdir)
+
     run(
         pot=args.pot,
         struct=args.struct,
-        outdir=Path(args.outdir),
+        outdir=outdir,
         strain_mag=args.strain,
         mlp=mlp,
         lattice_const=args.lattice_constant,

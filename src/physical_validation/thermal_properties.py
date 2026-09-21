@@ -512,8 +512,10 @@ def main() -> None:
                         help="Gamma-centered q-mesh for thermal integration (default: 30)")
     parser.add_argument("--displacement", type=float, default=0.01,
                         help="Phonopy displacement distance in A (default: 0.01)")
-    parser.add_argument("--outdir", default="results/tests/thermal_properties",
-                        help="Output directory")
+    parser.add_argument("--outdir", default=None,
+                        help="Output directory (default: results/tests/<pot's parent dir "
+                             "name>/thermal_properties, e.g. --pot results/potentials/pot_660277/pot.almtp "
+                             "-> results/tests/pot_660277/thermal_properties)")
     parser.add_argument("--backend", choices=["mlp", "lammps"], default="mlp",
                         help="Evaluation engine: 'mlp' calculate_efs (default) or "
                              "'lammps' (pair_style mtp+nlh — for potentials 'mlp' can't load)")
@@ -531,9 +533,15 @@ def main() -> None:
         with open(args.config) as f:
             mlp = yaml.safe_load(f)["mlp_binary"]
 
+    if args.outdir is None:
+        run_name = Path(args.pot).resolve().parent.name
+        outdir = Path("results/tests") / run_name / "thermal_properties"
+    else:
+        outdir = Path(args.outdir)
+
     run(
         pot=args.pot,
-        outdir=Path(args.outdir),
+        outdir=outdir,
         alat=args.alat,
         supercell_size=args.supercell,
         n_volumes=args.n_volumes,
