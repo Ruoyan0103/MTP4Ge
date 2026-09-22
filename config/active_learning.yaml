@@ -14,6 +14,7 @@ trajectories:
   - {lattice_constant: 5.6, temperature: 1800, template: liquid, supercell_size: 4, cubic: false, coef: 0.05, grade_threshold: 2, grade_break: 10}
   - {lattice_constant: 5.8, temperature: 1600, template: liquid, supercell_size: 4, cubic: false, coef: 0.03, grade_threshold: 2, grade_break: 10}
   - {lattice_constant: 5.8, temperature: 1800, template: liquid, supercell_size: 4, cubic: false, coef: 0.05, grade_threshold: 2, grade_break: 10}
+#  - {template: melt_quench, supercell_size: 3, density: 4.5, quench_rate: 1e13, grade_threshold: 2, grade_break: 10}
 
 # Tagging engine (Steps C/D — single-point reference labeling of AL-selected
 # structures): 'vasp' (default) runs DFT via VASP, one run per structure;

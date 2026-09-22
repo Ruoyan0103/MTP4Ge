@@ -281,6 +281,32 @@ def _liquid_lat_param(T: float) -> float:
     return (8 * M_Ge / (N_A * rho)) ** (1 / 3) * 1e8
 
 
+def _lat_param_from_density(density_g_cm3: float) -> float:
+    """Diamond cubic lattice constant (Å) for a target density (g/cm³).
+
+    a = (8·M / (Nₐ·ρ))^(1/3) × 10⁸  Å   (8-atom conventional cubic cell)
+    """
+    M_Ge = 72.630   # g/mol
+    N_A  = 6.02214076e23
+    return (8 * M_Ge / (N_A * density_g_cm3)) ** (1 / 3) * 1e8
+
+
+def _quench_steps(T_high: float, T_low: float, rate_K_per_s: float,
+                   timestep_ps: float = 0.001) -> int:
+    """Number of MD steps to ramp from T_high to T_low at rate_K_per_s (K/s)."""
+    delta_T = T_high - T_low
+    time_ps = delta_T / rate_K_per_s * 1e12   # seconds → picoseconds
+    return max(1000, int(time_ps / timestep_ps))
+
+
+# Fixed melt-quench protocol — must match the hardcoded `variable T_run` /
+# `variable T_melt` in config/lammps/md_melt_quench.in. Only density and
+# quench_rate vary per trajectory; everything else in that template (stage
+# lengths, T_run, T_melt) is the same for every melt_quench run.
+_MELT_QUENCH_T_RUN = 100.0
+_MELT_QUENCH_T_MELT = 1900.0
+
+
 def run_parallel_lammps_md(
     lammps: str,
     trajectories: list[dict],
@@ -294,9 +320,13 @@ def run_parallel_lammps_md(
 ) -> Path:
     """Launch one LAMMPS job per trajectory in parallel; merge preselected configs.
 
-    Each trajectory dict requires 'temperature' and 'lat_param'. Optional keys:
-      template        : 'solid' (default) or 'liquid' — selects md_nvt.in vs
-                        md_nvt_liquid.in (3-step melt→cool→equil protocol)
+    Each trajectory dict requires 'template'. 'solid'/'liquid' trajectories
+    additionally require 'temperature' and 'lat_param'. Optional keys:
+      template        : 'solid' (default), 'liquid', or 'melt_quench' — selects
+                        md_nvt.in, md_nvt_liquid.in (3-step melt→cool→equil
+                        protocol), or md_melt_quench.in (fixed-volume 4-stage
+                        equilibrate→heat/melt→quench→anneal protocol for
+                        amorphous structures at a chosen density)
       grade_threshold : per-trajectory γ_select (overrides default_threshold)
       grade_break     : per-trajectory γ_break; set equal to grade_threshold for
                         at-most-one-config-per-trajectory behaviour on liquid runs
@@ -305,12 +335,25 @@ def run_parallel_lammps_md(
                         file; if given, md_nvt.in reads it directly instead of
                         building the box from lat_param/supercell_size/cubic
 
+    melt_quench trajectories are a fixed protocol: T_run/T_melt/stage lengths
+    are hardcoded in md_melt_quench.in itself (see _MELT_QUENCH_T_RUN/_T_MELT,
+    which must match it) and are the same for every melt_quench trajectory.
+    Only two keys vary per trajectory:
+      density         : target density in g/cm³ — converted to a diamond cubic
+                        lattice constant (a = (8·M/(Nₐ·ρ))^(1/3)) and used to
+                        build an N×N×N supercell of the 8-atom conventional
+                        cubic cell (cubic=True always; supercell_size N → 8·N³
+                        atoms), which is fixed for the whole NVT trajectory
+      quench_rate     : cooling rate in K/s from T_melt down to T_run;
+                        converted to a step count via _quench_steps()
+
     Each job runs in iter_dir/md_NNN/ and writes preselected.cfg there.
     All non-empty per-trajectory preselected.cfg files are concatenated into
     iter_dir/preselected.cfg, which is returned.
     """
-    solid_tmpl  = Path("config/lammps/md_nvt.in")
-    liquid_tmpl = Path("config/lammps/md_nvt_liquid.in")
+    solid_tmpl       = Path("config/lammps/md_nvt.in")
+    liquid_tmpl      = Path("config/lammps/md_nvt_liquid.in")
+    melt_quench_tmpl = Path("config/lammps/md_melt_quench.in")
 
     procs: list[subprocess.Popen] = []
     md_dirs: list[Path] = []
@@ -320,34 +363,51 @@ def run_parallel_lammps_md(
         md_dir = iter_dir / f"md_{i:03d}"
         md_dir.mkdir(parents=True, exist_ok=True)
 
-        T         = float(traj["temperature"])
         tmpl_type = traj.get("template", "solid")
-        if "lattice_constant" in traj:
-            # Hard override: use as-is, skip the density calc and coef scaling below.
-            lat_param = float(traj["lattice_constant"])
-            coef = 0.0
+
+        if tmpl_type == "melt_quench":
+            # Fixed protocol: T_run/T_melt/stage lengths live in
+            # md_melt_quench.in itself; only density and quench_rate vary.
+            T            = _MELT_QUENCH_T_RUN
+            T_melt       = _MELT_QUENCH_T_MELT
+            density      = float(traj["density"])
+            lat_param    = _lat_param_from_density(density)
+            coef         = 0.0
+            quench_rate  = float(traj["quench_rate"])
+            quench_steps = _quench_steps(T_melt, T, quench_rate)
         else:
-            if "lat_param" in traj:
-                lat_param = float(traj["lat_param"])
-            elif tmpl_type == "liquid":
-                lat_param = _liquid_lat_param(T)
-            else:
-                lat_param = default_lat_param
-            if tmpl_type == "liquid":
-                coef = float(traj.get("coef", 0.0))
-                if coef:
-                    lat_param *= (1.0 + coef)
-            else:
+            T = float(traj["temperature"])
+            if "lattice_constant" in traj:
+                # Hard override: use as-is, skip the density calc and coef scaling below.
+                lat_param = float(traj["lattice_constant"])
                 coef = 0.0
+            else:
+                if "lat_param" in traj:
+                    lat_param = float(traj["lat_param"])
+                elif tmpl_type == "liquid":
+                    lat_param = _liquid_lat_param(T)
+                else:
+                    lat_param = default_lat_param
+                if tmpl_type == "liquid":
+                    coef = float(traj.get("coef", 0.0))
+                    if coef:
+                        lat_param *= (1.0 + coef)
+                else:
+                    coef = 0.0
         supercell_size = int(traj.get("supercell_size", default_supercell_size))
-        cubic          = bool(traj.get("cubic", default_cubic))
+        cubic          = True if tmpl_type == "melt_quench" else bool(traj.get("cubic", default_cubic))
         threshold = float(traj.get("grade_threshold", default_threshold))
         gb_raw    = float(traj.get("grade_break", default_grade_break))
         grade_break_val = gb_raw if gb_raw > 0 else threshold * 5
 
-        template = liquid_tmpl if tmpl_type == "liquid" else solid_tmpl
-
         if tmpl_type == "liquid":
+            template = liquid_tmpl
+        elif tmpl_type == "melt_quench":
+            template = melt_quench_tmpl
+        else:
+            template = solid_tmpl
+
+        if tmpl_type in ("liquid", "melt_quench"):
             read_data_line = f"read_data   {_write_lammps_structure(lat_param, md_dir / 'structure.lammps', supercell_size, cubic)}"
             system_setup = ""
         else:
@@ -365,14 +425,20 @@ def run_parallel_lammps_md(
             .replace("${SUPERCELL_SIZE}", str(supercell_size))
             .replace("${LAT_PARAM}", str(lat_param))
         )
+        if tmpl_type == "melt_quench":
+            text = text.replace("${QUENCH_STEPS}", str(quench_steps))
         (md_dir / "md.in").write_text(text)
 
         cmd = shlex.split(lammps) + ["-in", "md.in", "-log", "log.lammps", "-screen", "none"]
-        lat_src = "" if ("lattice_constant" in traj or "lat_param" in traj) else " (derived)"
+        lat_src = "" if ("lattice_constant" in traj or "lat_param" in traj or tmpl_type == "melt_quench") else " (derived)"
         coef_str = f"  coef={coef:+.3f}" if coef else ""
+        extra = (
+            f"  ρ={density:.2f}g/cc  T_melt={T_melt:.0f}K  quench={quench_rate:.1e}K/s→{quench_steps}steps"
+            if tmpl_type == "melt_quench" else ""
+        )
         print(
             f"  LAMMPS [{i:03d}] T={T:.0f}K  lat={lat_param:.4f}Å{lat_src}{coef_str}  ({tmpl_type})"
-            f"  γ_sel={threshold}  γ_brk={grade_break_val:.1f}"
+            f"  γ_sel={threshold}  γ_brk={grade_break_val:.1f}{extra}"
             f"  (cwd={md_dir})"
         )
         lammps_out = open(md_dir / "lammps.out", "w")
