@@ -181,7 +181,10 @@ cd "{abs_workdir}"
 
 def run_predict(frames: list, workdir: Path, gap_settings: dict) -> Path:
     """Run `turbogap predict` on frames (already-loaded ASE Atoms) inside
-    workdir; returns the path to the raw trajectory_out.xyz it writes.
+    workdir; returns the path to the raw trajectory_out.xyz it writes. If
+    workdir/trajectory_out.xyz already exists (e.g. from a prior run resumed
+    after a crash, or one run manually outside this driver), turbogap is not
+    re-run and the existing file is returned as-is.
 
     gap_settings:
       turbogap_command : binary/launch command, 'predict' is appended here,
@@ -207,6 +210,11 @@ def run_predict(frames: list, workdir: Path, gap_settings: dict) -> Path:
         )
     )
 
+    out = workdir / "trajectory_out.xyz"
+    if out.exists():
+        print(f"  {out} already exists — skipping turbogap predict.")
+        return out
+
     turbogap_command = gap_settings.get("turbogap_command", f"srun {DEFAULT_TURBOGAP}")
     turbogap_mode = gap_settings.get("turbogap_mode", "inline")
     if turbogap_mode == "sbatch":
@@ -216,7 +224,6 @@ def run_predict(frames: list, workdir: Path, gap_settings: dict) -> Path:
     else:
         raise ValueError(f"unknown turbogap_mode {turbogap_mode!r} (expected 'inline' or 'sbatch')")
 
-    out = workdir / "trajectory_out.xyz"
     if not out.exists():
         raise RuntimeError(f"turbogap predict did not produce {out}")
     return out

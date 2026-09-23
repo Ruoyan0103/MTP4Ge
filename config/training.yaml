@@ -17,8 +17,8 @@ force_weight: 0.01
 stress_weight: 0.001
 
 # Weight scaling with atom count (configs of different sizes):
-#   weight_scaling=1, weight_scaling_forces=0  → MD trajectories
-#   weight_scaling=2, weight_scaling_forces=1  → periodic DFT structures (use this)
+#   weight_scaling=1, weight_scaling_forces=0  → MD trajectories vibration mode 
+#   weight_scaling=2, weight_scaling_forces=1  → periodic DFT structures (use this) structure mode 
 #   weight_scaling=0, weight_scaling_forces=0  → molecules
 weight_scaling: 2
 weight_scaling_forces: 1

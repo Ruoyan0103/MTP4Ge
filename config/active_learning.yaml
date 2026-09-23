@@ -1,6 +1,10 @@
 # Active Learning Configuration
-init_train_cfg: data/GAP_tagged/cfg/train-tgap.cfg 
-init_train_pot: results/potentials/pot_660277/pot.almtp 
+init_train_cfg: results/potentials/pot_660277/AL-1/updated_train.cfg
+init_train_pot: results/potentials/pot_660277/AL-1/updated_pot.almtp
+# Sibling round folder for this AL run's outputs (iter_N/, updated_pot.almtp,
+# updated_train.cfg). Without this, AL state would default to <pot's
+# folder>/AL, which would nest under AL-1/ since init_train_pot points there.
+al_root: results/potentials/pot_660277/AL-2
 
 # Maximum number of active learning iterations
 max_iterations: 200
@@ -10,10 +14,11 @@ lammps_binary: /projappl/project_2012355/CODE/lammps-stable_23Jun2022_update4-EP
 
 # Liquid lat_param values derived from ρ(T) = −4.42×10⁻⁴·T + 6.17 g/cm³. a = (8·M / (Nₐ · ρ))^(1/3) × 10⁸ [Å] {https://doi.org/10.1016/S0022-0248(99)00089-5}
 trajectories:   
-  - {lattice_constant: 5.6, temperature: 1600, template: liquid, supercell_size: 4, cubic: false, coef: 0.03, grade_threshold: 2, grade_break: 10}
-  - {lattice_constant: 5.6, temperature: 1800, template: liquid, supercell_size: 4, cubic: false, coef: 0.05, grade_threshold: 2, grade_break: 10}
-  - {lattice_constant: 5.8, temperature: 1600, template: liquid, supercell_size: 4, cubic: false, coef: 0.03, grade_threshold: 2, grade_break: 10}
-  - {lattice_constant: 5.8, temperature: 1800, template: liquid, supercell_size: 4, cubic: false, coef: 0.05, grade_threshold: 2, grade_break: 10}
+  - {template: melt_quench, supercell_size: 2, density: 3.5, quench_rate: 1e11, grade_threshold: 2, grade_break: 10}
+  - {template: melt_quench, supercell_size: 2, density: 5.5, quench_rate: 1e11, grade_threshold: 2, grade_break: 10}
+
+  - {template: melt_quench, supercell_size: 2, density: 3.5, quench_rate: 1e12, grade_threshold: 2, grade_break: 10}
+  - {template: melt_quench, supercell_size: 2, density: 5.5, quench_rate: 1e12, grade_threshold: 2, grade_break: 10}
 
 # Tagging engine (Steps C/D — single-point reference labeling of AL-selected
 # structures): 'vasp' (default) runs DFT via VASP, one run per structure;
@@ -47,7 +52,7 @@ vasp_pp_version: "64"               # ASE 3.28+ requires explicit version; selec
 # GAP job/cluster settings (tagging_engine: gap). turbogap predict runs once
 # per iteration over all selected structures (no per-structure array job, so
 # there's nothing analogous to vasp_ncore/vasp_kpar to tune here).
-turbogap_mode: sbatch          # 'sbatch': submit a new SLURM job (blocks until it finishes); 'inline': run directly using current allocation
+turbogap_mode: inline          # 'sbatch': submit a new SLURM job (blocks until it finishes); 'inline': run directly using current allocation
 turbogap_command: "srun /projappl/project_2012355/CODE/TurboGAP_EPH/bin/turbogap"  # turbogap launch command; 'predict' is appended by the code, not here
 # SLURM settings for the turbogap job (used only when turbogap_mode=sbatch; reuses slurm_account/slurm_partition above)
 slurm_time_turbogap: "00:15:00"   # wall time for the turbogap job

@@ -1,0 +1,82 @@
+# LAMMPS melt-quench template for amorphous Ge, at fixed volume/density.
+# Density is NOT set in this file — it comes from the lattice constant baked
+# into the structure read via ${READ_DATA_LINE}, and stays fixed throughout
+# (NVT only, no barostat) so the target density is preserved exactly.
+# Placeholders filled at runtime by src/active_learning_structs/active_learning.py:
+#   ${T_RUN}           → base temperature in Kelvin (pre-melt equilibration and
+#                        post-quench anneal)
+#   ${T_MELT}          → melt temperature in Kelvin
+#   ${HEAT_STEPS}      → steps to ramp T_RUN → T_MELT
+#   ${MELT_STEPS}      → steps holding at T_MELT (randomizes the liquid)
+#   ${QUENCH_STEPS}    → steps to ramp T_MELT → T_RUN (sets the quench rate;
+#                        computed from the requested rate in K/s)
+#   ${EQ_STEPS}        → steps for initial and final NVT equilibration
+#   ${POT_PATH}        → absolute path to pot.almtp
+#   ${GRADE_THRESHOLD} → γ_select
+#   ${GRADE_BREAK}     → γ_break (set equal to γ_select for selecting one config per trajectory)
+#   ${READ_DATA_LINE}  → read_data line for the pre-built structure at the target density
+
+#===================== Simulation Parameters =======================
+variable T_run       equal 100
+variable T_melt      equal 1900
+variable EQ_STEPS    equal 5000    # 5 ps
+variable HEAT_STEPS  equal 100000  # 100 ps
+variable MELT_STEPS  equal 10000   # 10 ps
+variable SEED        equal 12345
+
+#===================== System Setup ================================
+units       metal
+boundary    p p p
+atom_style  atomic
+
+# Set lammps_structure in config/active_learning.yaml to activate this.
+${READ_DATA_LINE}
+
+mass        1 72.630
+#===================== Potential ===================================
+pair_style  mlip load_from=${POT_PATH} extrapolation_control=true &
+            threshold_save=${GRADE_THRESHOLD} &
+            threshold_break=${GRADE_BREAK} &
+            save_extrapolative_to=preselected.cfg
+pair_coeff  * *
+
+neighbor    2.0 bin
+neigh_modify delay 0 every 1 check yes
+timestep    0.001
+
+#===================== Initial Velocity ============================
+velocity    all create ${T_run} ${SEED} mom yes rot yes
+
+#===================== Thermodynamics ==============================
+thermo_style custom step time temp press vol etotal
+thermo      100
+
+#===================== Stage 1: equilibrate at T_RUN ================
+fix         eq1 all nvt temp ${T_run} ${T_run} 0.1
+run         ${EQ_STEPS}    # 5 ps
+unfix       eq1
+
+#===================== Stage 2: heat and melt =======================
+fix         heat all nvt temp ${T_run} ${T_melt} 0.5
+run         ${HEAT_STEPS}  # 100 ps
+unfix       heat
+
+fix         melt all nvt temp ${T_melt} ${T_melt} 0.1
+run         ${MELT_STEPS}  # 10 ps
+unfix       melt
+
+#===================== Stage 3: quench T_MELT -> T_RUN ==============
+fix         quench all nvt temp ${T_melt} ${T_run} 0.1
+run         ${QUENCH_STEPS}  
+unfix       quench
+
+#===================== Stage 4: anneal at T_RUN ======================
+fix         eq2 all nvt temp ${T_run} ${T_run} 0.1
+
+# dump        1 all custom 100 dump.lammpstrj id type x y z vx vy vz
+# dump_modify 1 sort id
+
+run         ${EQ_STEPS}  # 5 ps
+unfix       eq2
+
+write_data  quenched.lammps
