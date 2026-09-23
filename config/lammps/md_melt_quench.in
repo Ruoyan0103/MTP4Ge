@@ -21,7 +21,7 @@ variable T_run       equal 100
 variable T_melt      equal 1900
 variable EQ_STEPS    equal 5000    # 5 ps
 variable HEAT_STEPS  equal 100000  # 100 ps
-variable MELT_STEPS  equal 1000    # 1 ps
+variable MELT_STEPS  equal 10000   # 10 ps
 variable SEED        equal 12345
 
 #===================== System Setup ================================
@@ -62,7 +62,7 @@ run         ${HEAT_STEPS}  # 100 ps
 unfix       heat
 
 fix         melt all nvt temp ${T_melt} ${T_melt} 0.1
-run         ${MELT_STEPS}  # 1 ps
+run         ${MELT_STEPS}  # 10 ps
 unfix       melt
 
 #===================== Stage 3: quench T_MELT -> T_RUN ==============

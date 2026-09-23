@@ -136,6 +136,110 @@ def write_cfg(frames: list, path: Path) -> None:
     print(f"  Wrote {len(frames)} configs → {path}")
 
 
+def read_cfg(path: Path) -> list[tuple]:
+    """Parse MLIP CFG file → list of (ASE Atoms, feature_dict) tuples.
+
+    Inverse of write_cfg, but keeps forces under atoms.arrays["forces_mlip"]
+    (not attached via a calculator) and preserves the per-atom "ghost" column
+    (periodic images written by MLIP's Wrapper) as atoms.arrays["ghost"], so
+    callers can strip them before re-evaluating with an external code (see
+    src/tagging_structs/VASP_settings.py's _remove_ghost_atoms). Energy/virial
+    are not parsed here — this reader is for AL-selected structures, which
+    have geometry (and MTP-side forces) but no reference label yet; use
+    _parse_all_cfgs for already-labelled CFGs (Energy/PlusStress present).
+    """
+    idx_to_species = {v: k for k, v in SPECIES_MAP.items()}
+
+    blocks = re.split(r"(?=BEGIN_CFG\b)", path.read_text())
+    blocks = [b.strip() for b in blocks if b.strip().startswith("BEGIN_CFG")]
+    results = []
+
+    for block in blocks:
+        lines = block.splitlines()
+        idx = 0
+        n_atoms = 0
+        cell = []
+        atom_types: list[int] = []
+        positions: list[list[float]] = []
+        forces: list[list[float]] = []
+        features: dict[str, str] = {}
+
+        while idx < len(lines):
+            line = lines[idx].strip()
+
+            if line == "Size":
+                idx += 1
+                n_atoms = int(lines[idx].strip())
+
+            elif line == "Supercell":
+                for _ in range(3):
+                    idx += 1
+                    cell.append([float(x) for x in lines[idx].split()])
+
+            elif line.startswith("AtomData:"):
+                cols = line.split()[1:]  # column names after "AtomData:"
+                i_type = cols.index("type") if "type" in cols else 1
+                i_x = cols.index("cartes_x") if "cartes_x" in cols else 2
+                has_forces = "fx" in cols
+                i_fx = cols.index("fx") if has_forces else -1
+                has_ghost = "ghost" in cols
+                i_ghost = cols.index("ghost") if has_ghost else -1
+                ghost_flags: list[bool] = []
+                for _ in range(n_atoms):
+                    idx += 1
+                    parts = lines[idx].split()
+                    atom_types.append(int(parts[i_type]))
+                    positions.append([float(parts[i_x]), float(parts[i_x+1]), float(parts[i_x+2])])
+                    if has_forces and parts[i_fx] != "false":
+                        forces.append([float(parts[i_fx]), float(parts[i_fx+1]), float(parts[i_fx+2])])
+                    else:
+                        forces.append([0.0, 0.0, 0.0])
+                    ghost_flags.append(has_ghost and parts[i_ghost].lower() == "true")
+
+            elif line.startswith("Feature"):
+                m = re.match(r"Feature\s+(\S+)\s+(.*)", line)
+                if m:
+                    features[m.group(1)] = m.group(2).strip()
+
+            idx += 1
+
+        symbols = [idx_to_species.get(t, "X") for t in atom_types]
+        atoms = Atoms(
+            symbols=symbols,
+            positions=positions,
+            cell=cell,
+            pbc=True,
+        )
+        atoms.arrays["forces_mlip"] = np.array(forces)
+        if ghost_flags:
+            atoms.arrays["ghost"] = np.array(ghost_flags)
+        results.append((atoms, features))
+
+    return results
+
+
+def remove_ghost_atoms(atoms):
+    """Remove LAMMPS ghost (periodic image) atoms written by MLIP Wrapper.
+
+    Uses the 'ghost' flag stored by read_cfg when the CFG has a ghost column.
+    Falls back to fractional-coordinate deduplication only if the flag is absent
+    (e.g. CFGs that pre-date the ghost column).
+    """
+    if "ghost" in atoms.arrays:
+        real = np.where(~atoms.arrays["ghost"])[0]
+        return atoms[real]
+    # Legacy fallback: deduplicate by fractional position rounded to 3 dp.
+    scaled = atoms.get_scaled_positions(wrap=True)
+    seen: dict = {}
+    unique: list = []
+    for i, s in enumerate(scaled):
+        key = tuple(np.round(s % 1.0, 3))
+        if key not in seen:
+            seen[key] = i
+            unique.append(i)
+    return atoms[unique]
+
+
 def _convert_xyz(input_path: Path, outdir: Path) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -396,6 +500,25 @@ def _convert_cfg(cfg_path: Path, output: str | None, poscar: bool) -> None:
 
     ase_write(str(out_path), atoms_list if len(atoms_list) > 1 else atoms_list[0], format=fmt)
     print(f"Written {n} frame(s) → {out_path}")
+
+
+def cfg_to_poscars(cfg_path: Path, outdir: Path, prefix: str = "struct_") -> list[Path]:
+    """Write every CFG block in *cfg_path* to its own <outdir>/<prefix>N/POSCAR.
+
+    Folders are numbered from 1 in CFG order (struct_1, struct_2, ...). Ghost
+    atoms (periodic images flagged by MLIP's Wrapper) are stripped when the
+    CFG has a ghost column. Returns the list of created structure folders.
+    """
+    cfg_path, outdir = Path(cfg_path), Path(outdir)
+    struct_dirs = []
+    for n, (atoms, _features) in enumerate(read_cfg(cfg_path), start=1):
+        if "ghost" in atoms.arrays:
+            atoms = remove_ghost_atoms(atoms)
+        struct_dir = outdir / f"{prefix}{n}"
+        struct_dir.mkdir(parents=True, exist_ok=True)
+        ase_write(str(struct_dir / "POSCAR"), atoms, format="vasp", direct=True, sort=True)
+        struct_dirs.append(struct_dir)
+    return struct_dirs
 
 
 # ---------------------------------------------------------------------------

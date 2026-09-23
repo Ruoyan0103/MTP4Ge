@@ -127,9 +127,23 @@ def _record_trajectory_info(
 
 
 def select_add(mlp: str, pot: str, train_cfg: str, preselected: str, selected: Path) -> int:
-    cmd = shlex.split(mlp) + ["select_add", pot, train_cfg, preselected, str(selected)]
+    # Wrap with srun -n $SLURM_NTASKS: mlp select_add is the same MPI-capable
+    # build as `mlp train` (see retrain()'s equivalent override) but was
+    # otherwise always invoked as a single, unwrapped process — slow for a
+    # large preselected.cfg (the MaxVol selection scan is the bottleneck).
+    # OMP_NUM_THREADS=1 is required here: submit_active_learning.sh exports
+    # OMP_NUM_THREADS=$SLURM_NTASKS for the whole driver job, and without
+    # pinning it down per rank, every one of the N MPI ranks below would also
+    # spawn N OpenBLAS/OpenMP threads for its own MaxVol linear algebra —
+    # this oversubscription is what OOM-killed a prior run at -n 128
+    # (scripts/submit_train.sh already sets OMP_NUM_THREADS=1 for this same
+    # reason before its own srun-wrapped `mlp train` call).
+    n_tasks = os.environ.get("SLURM_NTASKS", "1")
+    mlp_launch = f"srun -n {n_tasks} {mlp}"
+    cmd = shlex.split(mlp_launch) + ["select_add", pot, train_cfg, preselected, str(selected)]
     print("  Select:", " ".join(cmd))
-    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    env = {**os.environ, "OMP_NUM_THREADS": "1"}
+    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     return _count_cfg(selected)
 
 
@@ -355,6 +369,38 @@ def run_parallel_lammps_md(
     liquid_tmpl      = Path("config/lammps/md_nvt_liquid.in")
     melt_quench_tmpl = Path("config/lammps/md_melt_quench.in")
 
+    # Split the job's SLURM allocation evenly across the concurrent
+    # trajectories (srun job steps packed into one allocation, same pattern
+    # as _run_vasp_inline's inline VASP parallelism). Falls back to running
+    # lammps_binary directly, unwrapped, outside a SLURM allocation (e.g.
+    # local testing) where SLURM_NTASKS isn't set.
+    allocated = os.environ.get("SLURM_NTASKS")
+    if allocated and trajectories:
+        n_per_traj = max(1, int(allocated) // len(trajectories))
+        # Plain srun -n (no --overlap, no --exact): both were tried and
+        # rejected. --overlap let different trajectories' ranks land on the
+        # same physical CPUs (confirmed via taskset), tanking each process to
+        # ~10-20% CPU instead of ~94%. --exact was meant to avoid the "step
+        # creation still disabled, retrying (Requested nodes are busy)"
+        # admission delay, but empirically made no difference on this
+        # cluster — steps still admitted ~one at a time. So we accept that
+        # delay: it's a one-time cost at the start of each trajectory, and
+        # this plain form is the one confirmed (via taskset/ps CPU%) to give
+        # each trajectory clean, dedicated cores once it does start.
+        lammps_launch_cmd = (
+            ["srun", "--nodes=1", f"--ntasks={n_per_traj}", "--cpus-per-task=1"]
+            + shlex.split(lammps)
+        )
+        print(f"  Splitting {allocated} allocated tasks across {len(trajectories)} "
+              f"trajectories: {n_per_traj} task(s) each.")
+        # Pin OMP threads to 1 per MPI task so LAMMPS doesn't inherit the
+        # driver job's own OMP_NUM_THREADS (set to the *full* allocation size
+        # in submit_active_learning.sh) and oversubscribe every task.
+        lammps_env = {**os.environ, "OMP_NUM_THREADS": "1"}
+    else:
+        lammps_launch_cmd = shlex.split(lammps)
+        lammps_env = None
+
     procs: list[subprocess.Popen] = []
     md_dirs: list[Path] = []
     log_fhs: list = []
@@ -429,7 +475,7 @@ def run_parallel_lammps_md(
             text = text.replace("${QUENCH_STEPS}", str(quench_steps))
         (md_dir / "md.in").write_text(text)
 
-        cmd = shlex.split(lammps) + ["-in", "md.in", "-log", "log.lammps", "-screen", "none"]
+        cmd = lammps_launch_cmd + ["-in", "md.in", "-log", "log.lammps", "-screen", "none"]
         lat_src = "" if ("lattice_constant" in traj or "lat_param" in traj or tmpl_type == "melt_quench") else " (derived)"
         coef_str = f"  coef={coef:+.3f}" if coef else ""
         extra = (
@@ -442,7 +488,7 @@ def run_parallel_lammps_md(
             f"  (cwd={md_dir})"
         )
         lammps_out = open(md_dir / "lammps.out", "w")
-        proc = subprocess.Popen(cmd, cwd=str(md_dir), stdout=lammps_out, stderr=lammps_out)
+        proc = subprocess.Popen(cmd, cwd=str(md_dir), stdout=lammps_out, stderr=lammps_out, env=lammps_env)
         procs.append(proc)
         md_dirs.append(md_dir)
         log_fhs.append(lammps_out)
@@ -479,79 +525,13 @@ def run_parallel_lammps_md(
 
 
 # ---------------------------------------------------------------------------
-# CFG reader  (inverse of convert.py write_cfg)
+# CFG reader  (moved to src/utils/convert_format.py — imported below — so that
+# src/tagging_structs/VASP_settings.py can also use it without importing this
+# module, which would create a circular import: this module already imports
+# VASP_settings.set_cal)
 # ---------------------------------------------------------------------------
 
-def read_cfg(path: Path) -> list[tuple]:
-    """Parse MLIP CFG file → list of (ASE Atoms, feature_dict) tuples."""
-    from ase import Atoms
-
-    blocks = re.split(r"(?=BEGIN_CFG\b)", path.read_text())
-    blocks = [b.strip() for b in blocks if b.strip().startswith("BEGIN_CFG")]
-    results = []
-
-    for block in blocks:
-        lines = block.splitlines()
-        idx = 0
-        n_atoms = 0
-        cell = []
-        atom_types: list[int] = []
-        positions: list[list[float]] = []
-        forces: list[list[float]] = []
-        features: dict[str, str] = {}
-
-        while idx < len(lines):
-            line = lines[idx].strip()
-
-            if line == "Size":
-                idx += 1
-                n_atoms = int(lines[idx].strip())
-
-            elif line == "Supercell":
-                for _ in range(3):
-                    idx += 1
-                    cell.append([float(x) for x in lines[idx].split()])
-
-            elif line.startswith("AtomData:"):
-                cols = line.split()[1:]  # column names after "AtomData:"
-                i_type = cols.index("type") if "type" in cols else 1
-                i_x = cols.index("cartes_x") if "cartes_x" in cols else 2
-                has_forces = "fx" in cols
-                i_fx = cols.index("fx") if has_forces else -1
-                has_ghost = "ghost" in cols
-                i_ghost = cols.index("ghost") if has_ghost else -1
-                ghost_flags: list[bool] = []
-                for _ in range(n_atoms):
-                    idx += 1
-                    parts = lines[idx].split()
-                    atom_types.append(int(parts[i_type]))
-                    positions.append([float(parts[i_x]), float(parts[i_x+1]), float(parts[i_x+2])])
-                    if has_forces and parts[i_fx] != "false":
-                        forces.append([float(parts[i_fx]), float(parts[i_fx+1]), float(parts[i_fx+2])])
-                    else:
-                        forces.append([0.0, 0.0, 0.0])
-                    ghost_flags.append(has_ghost and parts[i_ghost].lower() == "true")
-
-            elif line.startswith("Feature"):
-                m = re.match(r"Feature\s+(\S+)\s+(.*)", line)
-                if m:
-                    features[m.group(1)] = m.group(2).strip()
-
-            idx += 1
-
-        symbols = [_IDX_TO_SYMBOL.get(t, "X") for t in atom_types]
-        atoms = Atoms(
-            symbols=symbols,
-            positions=positions,
-            cell=cell,
-            pbc=True,
-        )
-        atoms.arrays["forces_mlip"] = np.array(forces)
-        if ghost_flags:
-            atoms.arrays["ghost"] = np.array(ghost_flags)
-        results.append((atoms, features))
-
-    return results
+from convert_format import read_cfg  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -920,14 +900,38 @@ def append_new_configs(new_cfg: Path, train_data: Path) -> int:
 def retrain(train_cfg_path: str, pot_path: str, train_config: str, iteration: int, log_path: str = "") -> None:
     from src.train import load_config, run_training
     cfg = load_config(train_config)
+    # Wrap mlp_binary with `srun -n $SLURM_NTASKS` for this retrain call only
+    # (matching scripts/submit_train.sh's own MPI launch), so the retrain step
+    # uses the AL job's full allocation instead of running on a single core.
+    # select_add/check_errors calls elsewhere in this file read mlp_binary
+    # straight from config/training.yaml and are unaffected by this override.
+    n_tasks = os.environ.get("SLURM_NTASKS", "1")
+    mlp_binary = f"srun -n {n_tasks} {cfg['mlp_binary']}"
     overrides = {
         "train_cfg": train_cfg_path,
         "mtp_template": pot_path,   # warm-start from current AL potential
         "output_potential": pot_path,
         "init_random": False,
+        "mlp_binary": mlp_binary,
         "log_path": log_path or None,
     }
-    run_training(cfg, overrides)
+    # Pin OMP_NUM_THREADS=1 for this call, same reason as select_add()'s
+    # override: submit_active_learning.sh exports OMP_NUM_THREADS=$SLURM_NTASKS
+    # for the whole driver job, and run_training's subprocess.Popen (in
+    # src/train.py) has no env parameter to override per-call, so it inherits
+    # that unless we temporarily patch it here — otherwise each of the
+    # n_tasks MPI ranks below also spawns OMP_NUM_THREADS-many OpenBLAS
+    # threads of its own (this OOM-killed select_add() at -n 128; retrain()
+    # has the same exposure even though it happened not to trigger it yet).
+    prev_omp = os.environ.get("OMP_NUM_THREADS")
+    os.environ["OMP_NUM_THREADS"] = "1"
+    try:
+        run_training(cfg, overrides)
+    finally:
+        if prev_omp is None:
+            os.environ.pop("OMP_NUM_THREADS", None)
+        else:
+            os.environ["OMP_NUM_THREADS"] = prev_omp
 
 
 # ---------------------------------------------------------------------------
@@ -1122,13 +1126,18 @@ def run_active_learning(
     al_pot_path: str = "",
     dft_dir: str = "",
     max_tagging_per_iter: int = 0,
+    al_root: str = "",
 ) -> None:
     mlp = train_cfg["mlp_binary"]
 
-    # All AL state lives under <pot_path's folder>/AL/, initialized once from
-    # the caller-supplied potential/training set and updated in place every
+    # All AL state lives under al_root, initialized once from the
+    # caller-supplied potential/training set and updated in place every
     # iteration thereafter (no per-iteration copies, no date-stamped names).
-    al_root = Path(pot_path).parent / "AL"
+    # Defaults to <pot_path's folder>/AL for backward compatibility, but can
+    # be pointed at a sibling round folder (e.g. AL-2) so that continuing
+    # from a previous round's output (AL-1/updated_pot.almtp) doesn't nest a
+    # new AL/ folder inside it.
+    al_root = Path(al_root) if al_root else Path(pot_path).parent / "AL"
     al_root.mkdir(parents=True, exist_ok=True)
 
     train_data = al_root / "updated_train.cfg"
@@ -1349,12 +1358,20 @@ def run_active_learning(
         shutil.copy(labelled, new_added)
         print(f"  Labelled configs written to {new_added}")
 
-        n_train_before = _count_cfg(train_data)
-        append_new_configs(new_added, train_data)
+        n_new = _count_cfg(new_added)
+        # Appending is idempotent via this marker so a crash/restart between
+        # the append and the end of Step E (e.g. resuming a killed retrain)
+        # doesn't double-append new_added.cfg into train_data.
+        append_marker = iter_dir / ".new_added_appended"
+        if n_new > 0 and not append_marker.exists():
+            append_new_configs(new_added, train_data)
+            append_marker.touch()
+        elif n_new > 0:
+            print(f"  {new_added} already appended to {train_data} — skipping re-append.")
         n_train = _count_cfg(train_data)
 
         # Step E: retrain
-        if n_train == n_train_before:
+        if n_new == 0:
             print("\nStep E — skipping retrain (no new configs added to training set).")
             sys.stdout.flush()
         else:
@@ -1420,6 +1437,7 @@ def main() -> None:
     parser.add_argument("--pot",       help="Potential path (overrides config)")
     parser.add_argument("--max-iter",  type=int, help="Max AL iterations (overrides al-config)")
     parser.add_argument("--al-pot",      help="Explicit output path for the evolving AL potential (default: <pot's folder>/AL/updated_pot.almtp)")
+    parser.add_argument("--al-root",     help="Explicit AL working directory (overrides config; default: <pot's folder>/AL). Use to keep sequential AL rounds as sibling folders, e.g. AL-2, instead of nesting under the seed potential's folder")
     parser.add_argument("--temperature", type=float, help="NVT temperature in K (overrides al-config temperature)")
     parser.add_argument("--lat-param",   type=float, help="Diamond cubic lattice constant (Å) for lattice creation (overrides al-config lat_param)")
     parser.add_argument("--dft-dir",              help="Root directory for VASP DFT calculations (e.g. data/defect_dft or data/thermal_dft)")
@@ -1438,7 +1456,9 @@ def main() -> None:
     max_iter             = args.max_iter or al_cfg.get("max_iterations", 20)
     max_tagging_per_iter = args.max_tagging_per_iter or int(al_cfg.get("max_tagging_per_iter", 0))
 
-    run_active_learning(train_cfg, al_cfg, pot_path, max_iter, al_pot_path=args.al_pot or "", dft_dir=args.dft_dir or "", max_tagging_per_iter=max_tagging_per_iter)
+    al_root = args.al_root or al_cfg.get("al_root", "")
+
+    run_active_learning(train_cfg, al_cfg, pot_path, max_iter, al_pot_path=args.al_pot or "", dft_dir=args.dft_dir or "", max_tagging_per_iter=max_tagging_per_iter, al_root=al_root)
 
 
 if __name__ == "__main__":
