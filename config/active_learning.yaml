@@ -1,10 +1,10 @@
 # Active Learning Configuration
-init_train_cfg: results/potentials/pot_660277/AL-1/updated_train.cfg
-init_train_pot: results/potentials/pot_660277/AL-1/updated_pot.almtp
+init_train_cfg: data/GAP_tagged/cfg/pot_1016_dimers_le3/train.cfg
+init_train_pot: results/potentials/pot_308865/pot.almtp
 # Sibling round folder for this AL run's outputs (iter_N/, updated_pot.almtp,
 # updated_train.cfg). Without this, AL state would default to <pot's
 # folder>/AL, which would nest under AL-1/ since init_train_pot points there.
-al_root: results/potentials/pot_660277/AL-2
+al_root: results/potentials/pot_308865/AL-1
 
 # Maximum number of active learning iterations
 max_iterations: 200
@@ -14,11 +14,142 @@ lammps_binary: /projappl/project_2012355/CODE/lammps-stable_23Jun2022_update4-EP
 
 # Liquid lat_param values derived from ρ(T) = −4.42×10⁻⁴·T + 6.17 g/cm³. a = (8·M / (Nₐ · ρ))^(1/3) × 10⁸ [Å] {https://doi.org/10.1016/S0022-0248(99)00089-5}
 trajectories:   
-  - {template: melt_quench, supercell_size: 2, density: 3.5, quench_rate: 1e11, grade_threshold: 2, grade_break: 10}
-  - {template: melt_quench, supercell_size: 2, density: 5.5, quench_rate: 1e11, grade_threshold: 2, grade_break: 10}
-
-  - {template: melt_quench, supercell_size: 2, density: 3.5, quench_rate: 1e12, grade_threshold: 2, grade_break: 10}
-  - {template: melt_quench, supercell_size: 2, density: 5.5, quench_rate: 1e12, grade_threshold: 2, grade_break: 10}
+ # >>> AL-4: tri-vacancy (data/LAMMPS_untagged/vacancies/tri_vac, built with src/direct_generating_structs/defects.py,
+ # >>> a = 5.762 A, 3x3x3 diamond cell, unrelaxed -- the MD relaxes them). Solid template (md_nvt.in, 10 ps NVT),
+ # >>> 300/600/900 K: relaxation plus thermal sampling and, at higher T, cluster rearrangement. Standard grades 2/10.
+ # >>> Di-/hexa-vacancy can be added later as further read_data entries.
+ - {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/vacancies/tri_vac/unrelaxed_lammps-333.data, grade_threshold: 2, grade_break: 10}   # tri-vacancy, 213 atoms
+ - {template: solid, temperature: 600, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/vacancies/tri_vac/unrelaxed_lammps-333.data, grade_threshold: 2, grade_break: 10}   # tri-vacancy, 213 atoms
+ - {template: solid, temperature: 900, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/vacancies/tri_vac/unrelaxed_lammps-333.data, grade_threshold: 2, grade_break: 10}   # tri-vacancy, 213 atoms
+ #
+ # Strongly compressed bulk (diamond, beta-Sn, bcc, fcc): every atom has 4-12 neighbours at
+ # 1.7-2.1 A (NN = 1.75/1.85/1.95/2.05 A; bcc at 1.75 A excluded: 14 neighbours). 300 K: these
+ # cells sit at very high pressure. (Previous fcc/hcp volume scan: see AL-1/trajectory_info.txt.)
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/diamond_64atoms_V0.345.data, grade_threshold: 2, grade_break: 10}
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/diamond_64atoms_V0.408.data, grade_threshold: 2, grade_break: 10}
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/diamond_64atoms_V0.477.data, grade_threshold: 2, grade_break: 10}
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/diamond_64atoms_V0.555.data, grade_threshold: 2, grade_break: 10}
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/betaTin_64atoms_V0.275.data, grade_threshold: 2, grade_break: 10}
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/betaTin_64atoms_V0.325.data, grade_threshold: 2, grade_break: 10}
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/betaTin_64atoms_V0.381.data, grade_threshold: 2, grade_break: 10}
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/betaTin_64atoms_V0.443.data, grade_threshold: 2, grade_break: 10}
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/bcc_54atoms_V0.251.data, grade_threshold: 2, grade_break: 10}
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/bcc_54atoms_V0.294.data, grade_threshold: 2, grade_break: 10}
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/bcc_54atoms_V0.342.data, grade_threshold: 2, grade_break: 10}
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/fcc_108atoms_V0.194.data, grade_threshold: 2, grade_break: 10}
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/fcc_108atoms_V0.229.data, grade_threshold: 2, grade_break: 10}
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/fcc_108atoms_V0.268.data, grade_threshold: 2, grade_break: 10}
+ #- {template: solid, temperature: 300, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/multiphase/fcc_108atoms_V0.312.data, grade_threshold: 2, grade_break: 10}
+ 
+ # >>> Batch 2 = AL-3 (from AL-2/updated_pot.almtp + updated_train.cfg): only the melt-quench runs below are active;
+ # >>> the compressed / cascade / single-pair lines are AL-2's (batch 1), kept commented for reference.
+ # Compressed melt-quench (64 atoms, 2x2x2 diamond start), 6.5-8.5 g/cm3 = 0.78-0.59 of diamond V0 (23.91 A^3/atom),
+ # filling the gap between normal-density liquid/amorphous data (4.0-5.63 g/cm3) and the compressed crystals above.
+ # The density is fixed for the whole run (NVT, md_melt_quench.in): 100 K -> 1900 K -> 1900 K hold -> quench at
+ # 1e12 K/s -> 100 K, dt = 0.5 fs, so the samples are high-pressure liquid and glass rather than normal a-Ge.
+ #- {template: melt_quench, supercell_size: 2, density: 6.5, quench_rate: 1e12, grade_threshold: 2, grade_break: 10}
+ #- {template: melt_quench, supercell_size: 2, density: 7.0, quench_rate: 1e12, grade_threshold: 2, grade_break: 10}
+ #- {template: melt_quench, supercell_size: 2, density: 7.5, quench_rate: 1e12, grade_threshold: 2, grade_break: 10}
+ #- {template: melt_quench, supercell_size: 2, density: 8.0, quench_rate: 1e12, grade_threshold: 2, grade_break: 10}
+ #- {template: melt_quench, supercell_size: 2, density: 8.5, quench_rate: 1e12, grade_threshold: 2, grade_break: 10}
+ 
+ # Cascade-core snapshots (PKA 2000 eV, see data/LAMMPS_untagged/cascade/README): meant for direct
+ # labelling. grade_threshold 0.95 < grade_break 1.0 (MLIP only breaks if break > threshold) and all
+ # 22 frames have step-0 grade 1.07-215 with AL-1/updated_pot.almtp, so each MD saves its unchanged
+ # starting structure and stops at step 0. 10 K only sets the initial velocities.
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame02_t0.04ps_c0.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame05_t0.10ps_c0.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame06_t0.20ps_c0.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame09_t0.50ps_c0.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame10_t0.60ps_c0.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame11_t0.70ps_c0.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame11_t0.70ps_c1.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame11_t0.70ps_c2.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame11_t0.70ps_c3.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame12_t0.80ps_c0.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame12_t0.80ps_c1.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame12_t0.80ps_c2.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame12_t0.80ps_c3.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame12_t0.80ps_c4.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame13_t0.90ps_c0.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame13_t0.90ps_c1.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame13_t0.90ps_c2.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame13_t0.90ps_c3.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame13_t0.90ps_c4.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame13_t0.90ps_c5.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame13_t0.90ps_c6.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/cascade/frame13_t0.90ps_c7.data, grade_threshold: 0.95, grade_break: 1.0}
+ 
+ # Single Ge-Ge pair at 1.50-2.20 A, all 64 frames (data/LAMMPS_untagged/single_pair), same grades as the
+ # cascade frames. With AL-1/updated_pot.almtp, 17 frames (d <= 1.60 A, plus nonbond_100_d1.70_rattle0.05) have
+ # step-0 grade > 1.0 and are saved unchanged at step 0; the other 47 (grade 0.33-0.94) run the 10 K MD and
+ # only contribute if they cross 0.95 - select_add keeps only what extends the dataset.
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d1.50.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d1.50_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d1.60.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d1.60_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d1.70.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d1.70_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d1.80.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d1.80_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d1.90.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d1.90_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d2.00.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d2.00_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d2.10.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d2.10_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d2.20.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_one_d2.20_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d1.50.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d1.50_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d1.60.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d1.60_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d1.70.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d1.70_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d1.80.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d1.80_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d1.90.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d1.90_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d2.00.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d2.00_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d2.10.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d2.10_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d2.20.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/bond_sym_d2.20_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ 
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d1.50.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d1.50_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d1.60.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d1.60_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d1.70.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d1.70_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d1.80.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d1.80_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d1.90.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d1.90_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d2.00.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d2.00_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d2.10.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d2.10_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d2.20.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_100_d2.20_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d1.50.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d1.50_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d1.60.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d1.60_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d1.70.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d1.70_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d1.80.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d1.80_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d1.90.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d1.90_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d2.00.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d2.00_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d2.10.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d2.10_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d2.20.data, grade_threshold: 0.95, grade_break: 1.0}
+ #- {template: solid, temperature: 10, read_data: /scratch/project_2012355/Paper_3/MTP4Ge/data/LAMMPS_untagged/single_pair/nonbond_111_d2.20_rattle0.05.data, grade_threshold: 0.95, grade_break: 1.0}
+ 
 
 # Tagging engine (Steps C/D — single-point reference labeling of AL-selected
 # structures): 'vasp' (default) runs DFT via VASP, one run per structure;

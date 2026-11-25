@@ -23,7 +23,7 @@ set -euo pipefail
 REPO_ROOT="/scratch/project_2012355/Paper_3/MTP4Ge"
 cd "$REPO_ROOT"
 
-POT="${1:-/scratch/project_2012355/Paper_3/MTP4Ge/results/potentials/pot_660277/pot.almtp}"
+POT="${1:-/scratch/project_2012355/Paper_3/MTP4Ge/results/potentials/pot_1008/best.mtp}"
 
 source /scratch/project_2012355/Paper_3/mtp-env/bin/activate
 export OMP_NUM_THREADS=1

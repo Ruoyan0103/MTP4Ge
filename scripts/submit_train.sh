@@ -2,9 +2,9 @@
 #SBATCH --job-name=mtp_train
 #SBATCH --account=project_2012355
 #SBATCH --partition=small
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks=20
+#SBATCH --ntasks=60
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=32G
 #SBATCH --output=logs/train_%j.out

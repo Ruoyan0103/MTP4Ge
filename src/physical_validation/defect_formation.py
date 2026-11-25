@@ -65,6 +65,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
 from utils import _mlp_env, calc_efs, write_bare_cfg, _read_cfg_geometry
 from convert_format import _parse_all_cfgs, _convert_cfg
 from energy_volume import DEFAULT_LAMMPS, _run_lammps_energy
+import lammps_pair
 
 DEFAULT_TRAIN_CONFIG = "config/training.yaml"
 LAMMPS_TEMPLATE = Path(__file__).resolve().parent.parent.parent / "config" / "lammps" / "relax.in"
@@ -425,6 +426,7 @@ def _relax_lammps(
         .replace("${BOX_RELAX_LINE}", box_relax_line)
         .replace("${UNFIX_LINE}", unfix_line)
     )
+    text = lammps_pair.apply(text, pot)
     (workdir / "in.relax").write_text(text)
 
     cmd = shlex.split(lammps_cmd) + [
@@ -491,8 +493,9 @@ def run(pot: str, outdir: Path, a0: float,
         fmax: float, max_steps: int, no_relax: bool,
         supercell: tuple[int, int, int] = SUPERCELL,
         backend: str = "mlp", mlp: str | None = None,
-        lammps_cmd: str = DEFAULT_LAMMPS) -> None:
+        lammps_cmd: str = DEFAULT_LAMMPS, rattle: float = 0.0) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(0)
 
     relax_fn = _relax_mlp if backend == "mlp" else _relax_lammps
     cohesive_fn = _cohesive_mlp if backend == "mlp" else _cohesive_lammps
@@ -530,6 +533,8 @@ def run(pot: str, outdir: Path, a0: float,
     for name, (builder, _) in DEFECTS.items():
         print(f"\n  [{DISPLAY[name]}]")
         d_cell, d_pos, d_types = builder(b_cell, b_pos, b_types, repeat=supercell)
+        if rattle > 0:
+            d_pos = d_pos + rng.normal(0.0, rattle, d_pos.shape)
         n_def = len(d_pos)
         print(f"    {n_def} atoms | cell {tuple(round(x,3) for x in np.diag(d_cell))} Å")
         d_out = outdir / name
@@ -556,6 +561,7 @@ def run(pot: str, outdir: Path, a0: float,
         f"cell+ions (ISIF=3 analog); "
         f"defects: {'BFGS' if backend == 'mlp' else 'LAMMPS cg'} "
         f"fixed-cell ions-only (ISIF=2 analog), fmax={fmax} eV/Å"
+        + (f", defect cells rattled {rattle} Å before relaxing" if rattle > 0 else "")
     )
     with open(out_txt, "w") as f:
         f.write(f"Point defect formation energies — MTP: {pot}{engine_tag}\n")
@@ -618,6 +624,10 @@ def main() -> None:
                         help="Force convergence threshold eV/Å (default: 0.0001)")
     parser.add_argument("--max-steps",  type=int,   default=500,
                         help="Max relaxation steps per defect (default: 500)")
+    parser.add_argument("--rattle",     type=float, default=0.0,
+                        help="Gaussian random displacement [Å] of every atom of each defect cell before "
+                             "relaxing (fixed seed; default 0 = none). Needed for SW, whose unrelaxed "
+                             "vacancy has exactly zero forces by symmetry and never relaxes")
     parser.add_argument("--no-relax",   action="store_true",
                         help="Skip relaxation — compute energy at as-built geometry")
     parser.add_argument("--supercell",  type=int, nargs=3, default=list(SUPERCELL),
@@ -627,9 +637,10 @@ def main() -> None:
                         help="Output directory (default: results/tests/<pot's parent dir "
                              "name>/defect_formation, e.g. --pot results/potentials/pot_660277/pot.almtp "
                              "-> results/tests/pot_660277/defect_formation)")
-    parser.add_argument("--backend",    choices=["mlp", "lammps"], default="mlp",
+    parser.add_argument("--backend",    choices=["mlp", "lammps", "lammps-sw"], default="mlp",
                         help="Evaluation engine: 'mlp' relax/calculate_efs (default) or "
-                             "'lammps' (pair_style mtp+nlh — for potentials 'mlp' can't load)")
+                             "'lammps' (pair_style mtp+nlh — for potentials 'mlp' can't load) or "
+                             "'lammps-sw' (SW + NLH table, --pot = its directory)")
     parser.add_argument("--config",     default=DEFAULT_TRAIN_CONFIG,
                         help="Training YAML (provides mlp_binary; --backend mlp only)")
     parser.add_argument("--mlp",        default=None,
@@ -638,6 +649,9 @@ def main() -> None:
                         help="LAMMPS command, e.g. 'srun /path/to/lmp_mpi' "
                              f"(--backend lammps only; default: {DEFAULT_LAMMPS})")
     args = parser.parse_args()
+    if args.backend == "lammps-sw":
+        lammps_pair.check_sw(args.pot)
+        args.backend = "lammps"
 
     mlp = args.mlp
     if args.backend == "mlp" and mlp is None:
@@ -661,6 +675,7 @@ def main() -> None:
         backend=args.backend,
         mlp=mlp,
         lammps_cmd=args.lammps,
+        rattle=args.rattle,
     )
 
 

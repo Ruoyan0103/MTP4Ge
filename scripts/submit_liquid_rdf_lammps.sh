@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=mtp_liquid_nlh
 #SBATCH --account=project_2012355
-#SBATCH --partition=medium
-#SBATCH --time=24:00:00
-#SBATCH --nodes=5
-#SBATCH --ntasks=120
+#SBATCH --partition=small
+#SBATCH --time=08:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=30
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
 #SBATCH --output=logs/liquid_nlh_%j.out
@@ -29,7 +29,7 @@ set -euo pipefail
 REPO_ROOT="/scratch/project_2012355/Paper_3/MTP4Ge"
 cd "$REPO_ROOT"
 
-POT="${1:-results/potentials/20.mtp}"
+POT="${1:-results/potentials/pot_1008/best.mtp}"
 shift || true
 
 # --- Environment ---

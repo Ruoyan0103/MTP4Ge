@@ -345,15 +345,15 @@ def main() -> None:
         help="Path to MTP potential file (.almtp)"
     )
     parser.add_argument(
-        "--nx", type=int, default=10,
+        "--nx", type=int, default=3,
         help="Number of unit cells in x direction (default: 10)"
     )
     parser.add_argument(
-        "--ny", type=int, default=10,
+        "--ny", type=int, default=3,
         help="Number of unit cells in y direction (default: 10)"
     )
     parser.add_argument(
-        "--nz", type=int, default=10,
+        "--nz", type=int, default=3,
         help="Number of unit cells in z direction (default: 10)"
     )
     parser.add_argument(

@@ -32,6 +32,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
 from utils import calc_efs, load_structure, write_bare_cfg
+import lammps_pair
 
 DEFAULT_TRAIN_CONFIG = "config/training.yaml"
 DEFAULT_AL_CONFIG = "config/active_learning.yaml"
@@ -232,10 +233,9 @@ def compute_elastic_constants_lammps(lammps_cmd: str, pot: str, outdir: Path) ->
     for name in ("init.mod", "displace.mod", "in.elastic"):
         shutil.copy(LAMMPS_ELASTIC_DIR / name, run_dir / name)
 
-    potential_text = (
+    potential_text = lammps_pair.apply(
         (LAMMPS_ELASTIC_DIR / "potential.mod").read_text()
-        .replace("${POT_PATH}", str(Path(pot).resolve()))
-    )
+        .replace("${POT_PATH}", str(Path(pot).resolve())), pot)
     (run_dir / "potential.mod").write_text(potential_text)
 
     cmd = shlex.split(lammps_cmd) + ["-in", "in.elastic", "-log", "log.lammps", "-screen", "none"]
@@ -367,15 +367,19 @@ def main() -> None:
                         help="Training YAML config (provides mlp_binary)")
     parser.add_argument("--mlp",    default=None,
                         help="Override mlp binary path")
-    parser.add_argument("--method", choices=["mtp", "lammps"], default="lammps",
+    parser.add_argument("--method", choices=["mtp", "lammps", "lammps-sw"], default="lammps",
                         help="'mtp' (default): clamped-ion, mlp calculate_efs finite differences. "
                              "'lammps': relaxed-ion, runs src/physical_validation/elastic_constant/in.elastic "
-                             "(atoms minimized at each fixed strain).")
+                             "(atoms minimized at each fixed strain). 'lammps-sw': the same with "
+                             "SW + NLH table (--pot = its directory).")
     parser.add_argument("--al-config", default=DEFAULT_AL_CONFIG,
                         help="Active-learning YAML config (provides lammps_binary; --method lammps only)")
     parser.add_argument("--lammps", default=None,
                         help="Override LAMMPS command (--method lammps only), e.g. 'srun /path/to/lmp_mpi'")
     args = parser.parse_args()
+    if args.method == "lammps-sw":
+        lammps_pair.check_sw(args.pot)
+        args.method = "lammps"
 
     mlp = args.mlp
     if mlp is None:

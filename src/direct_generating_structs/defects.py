@@ -79,6 +79,24 @@ def build_2NNdivacancy(a0: float, repeat=(2, 2, 2)):
     return atoms.get_cell().array.copy(), atoms.get_positions(), [0] * len(atoms)
 
 
+def build_trivacancy(a0: float, repeat=(2, 2, 2)):
+    """
+    Remove an atom, one of its 1NN, and a 1NN of that second atom: three
+    vacant sites forming a connected chain (bond angle 109.5 deg), i.e. the
+    compact trivacancy -- a three-site segment of a six-membered ring.
+    """
+    atoms = _sc(a0, repeat)
+    dists = np.linalg.norm(atoms.get_positions(), axis=1)
+    idx0 = int(np.argmin(dists))
+    pos0 = atoms.get_positions()[idx0].copy()
+    del atoms[idx0]
+    idx1 = _neighbor_shell_index(atoms, pos0, shell=1)
+    pos1 = atoms.get_positions()[idx1].copy()
+    del atoms[idx1]
+    del atoms[_neighbor_shell_index(atoms, pos1, shell=1)]
+    return atoms.get_cell().array.copy(), atoms.get_positions(), [0] * len(atoms)
+
+
 def build_T_interstitial(a0: float, repeat=(2, 2, 2)):
     """
     Tetrahedral void: (1/2,1/2,1/2) fractional of conventional cell.
@@ -134,6 +152,7 @@ DEFECTS = {
     "vac": build_vacancy,
     "1NN_vac": build_1NNdivacancy,
     "2NN_vac": build_2NNdivacancy,
+    "tri_vac": build_trivacancy,
     "T_int": build_T_interstitial,
     "H_int": build_H_interstitial,
     "X_int": build_X_dumbbell,
