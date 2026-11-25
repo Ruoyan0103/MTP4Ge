@@ -24,4 +24,4 @@ weight_scaling: 2
 weight_scaling_forces: 1
 
 # Randomize initial MTP parameters (true recommended when training from scratch)
-init_random: true
+init_random: false

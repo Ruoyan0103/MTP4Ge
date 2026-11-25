@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=AL
 #SBATCH --account=project_2012355
-#SBATCH --partition=medium
-#SBATCH --time=36:00:00
-##SBATCH --nodes=1
+#SBATCH --partition=small
+#SBATCH --time=1-00:00:00
+#SBATCH --nodes=1
 #SBATCH --ntasks=128
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=32G
+#SBATCH --mem=128G
 #SBATCH --output=logs/al_%j.out
 #SBATCH --error=logs/al_%j.err
 

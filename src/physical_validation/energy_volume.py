@@ -32,6 +32,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
 from utils import calc_efs, load_structure, write_bare_cfg
+import lammps_pair
 
 DEFAULT_TRAIN_CONFIG = "config/training.yaml"
 EV_A3_TO_GPA = 160.21766   # 1 eV/Å³ = 160.21766 GPa
@@ -92,6 +93,7 @@ def _run_lammps_energy(
         .replace("${POT_PATH}", str(Path(pot).resolve()))
         .replace("${MASS}", str(GE_MASS))
     )
+    text = lammps_pair.apply(text, pot)
     (workdir / "in.energy_volume").write_text(text)
 
     cmd = shlex.split(lammps_cmd) + [
@@ -282,10 +284,11 @@ def main() -> None:
                         help="Number of volume points (default: 20)")
     parser.add_argument("--vrange",  type=float, default=0.30,
                         help="Fractional volume range (default: 0.30 → ±15%%)")
-    parser.add_argument("--backend", choices=["mlp", "lammps"], default="mlp",
+    parser.add_argument("--backend", choices=["mlp", "lammps", "lammps-sw"], default="mlp",
                         help="Evaluation engine: 'mlp' calculate_efs (default) or "
                              "'lammps' (pair_style mtp+nlh — for potentials 'mlp' "
-                             "can't load)")
+                             "can't load) or 'lammps-sw' (SW + NLH table, --pot = its "
+                             "directory; see src/utils/lammps_pair.py)")
     parser.add_argument("--config",  default=DEFAULT_TRAIN_CONFIG,
                         help="Training YAML config (provides mlp_binary; --backend mlp only)")
     parser.add_argument("--mlp",     default=None,
@@ -294,6 +297,9 @@ def main() -> None:
                         help="LAMMPS command, e.g. 'srun /path/to/lmp_mpi' "
                              f"(--backend lammps only; default: {DEFAULT_LAMMPS})")
     args = parser.parse_args()
+    if args.backend == "lammps-sw":
+        lammps_pair.check_sw(args.pot)
+        args.backend = "lammps"
 
     mlp = args.mlp
     if args.backend == "mlp" and mlp is None:

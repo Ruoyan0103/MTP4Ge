@@ -41,6 +41,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 # Force line-buffering so Python prints appear before subprocess output in SLURM logs.
@@ -96,28 +97,27 @@ def _record_trajectory_info(
 
     Lives at the AL folder's top level alongside updated_pot.almtp and
     updated_train.cfg, so the provenance of the structures accumulated into
-    those two files stays traceable. One block per distinct tagging_engine
-    ('vasp'/'gap' — guarded so resuming an already-started run doesn't
-    duplicate its entry) recording the initial potential, the initial
-    training dataset it was copied from, and the trajectories config used to
-    generate the MD structures.
+    those two files stays traceable. One block per distinct configuration
+    (tagging_engine, initial potential/dataset, trajectories), each stamped
+    with the time and SLURM job that first used it. Resuming with an
+    identical configuration doesn't duplicate its entry; resubmitting with
+    changed trajectories (e.g. a new grade_threshold) appends a new block.
     """
     info_path = al_root / "trajectory_info.txt"
-    header = f"[tagging_engine: {tagging_engine}]"
     existing = info_path.read_text() if info_path.exists() else ""
-    if header in existing:
-        return
     traj_text = yaml.dump(trajectories, default_flow_style=False, sort_keys=False) if trajectories else "(none)\n"
-    block = (
-        f"{header}\n"
+    body = (
+        f"[tagging_engine: {tagging_engine}]\n"
         f"initial_potential: {initial_potential}\n"
         f"initial_training_dataset: {initial_train_cfg}\n"
         f"trajectories:\n"
         + "".join(f"  {line}\n" for line in traj_text.splitlines())
-        + "\n"
     )
+    if body in existing:
+        return
+    stamp = f"# recorded {datetime.now():%Y-%m-%d %H:%M:%S}, SLURM job {os.environ.get('SLURM_JOB_ID', 'none')}\n"
     with info_path.open("a") as f:
-        f.write(block)
+        f.write(stamp + body + "\n")
     print(f"  Trajectory info recorded: {info_path}")
 
 
@@ -321,6 +321,30 @@ _MELT_QUENCH_T_RUN = 100.0
 _MELT_QUENCH_T_MELT = 1900.0
 
 
+def _traj_key(traj: dict) -> str:
+    """Stable identity of a trajectory entry: its settings, independent of list position."""
+    return yaml.dump(traj, default_flow_style=True, sort_keys=True).strip()
+
+
+def _load_finished_trajectories(al_root: Path) -> set[str]:
+    """Keys of trajectories that already ran their full MD length in an earlier iteration."""
+    path = al_root / "finished_trajectories.yaml"
+    if not path.exists():
+        return set()
+    return {_traj_key(t) for t in (yaml.safe_load(path.read_text()) or [])}
+
+
+def _save_finished_trajectories(al_root: Path, finished: list[dict]) -> None:
+    (al_root / "finished_trajectories.yaml").write_text(
+        yaml.dump(finished, default_flow_style=False, sort_keys=False))
+
+
+def _md_ran_full_length(md_dir: Path) -> bool:
+    """True if LAMMPS reached the end of md.in (normal exit), i.e. was not stopped by grade_break."""
+    log = md_dir / "log.lammps"
+    return log.exists() and "Total wall time" in log.read_text()
+
+
 def run_parallel_lammps_md(
     lammps: str,
     trajectories: list[dict],
@@ -331,8 +355,13 @@ def run_parallel_lammps_md(
     default_lat_param: float = 5.76,
     default_supercell_size: int = 1,
     default_cubic: bool = False,
+    traj_ids: list[int] | None = None,
 ) -> Path:
     """Launch one LAMMPS job per trajectory in parallel; merge preselected configs.
+
+    traj_ids gives each trajectory's index in the full trajectory list, used to
+    name its md_NNN/ folder, so a trajectory keeps the same folder number when
+    finished trajectories are skipped (default: 0..len(trajectories)-1).
 
     Each trajectory dict requires 'template'. 'solid'/'liquid' trajectories
     additionally require 'temperature' and 'lat_param'. Optional keys:
@@ -387,8 +416,20 @@ def run_parallel_lammps_md(
         # delay: it's a one-time cost at the start of each trajectory, and
         # this plain form is the one confirmed (via taskset/ps CPU%) to give
         # each trajectory clean, dedicated cores once it does start.
+        # The actual cause of that serialization was memory, not CPUs: a step
+        # with no --mem is given the job's *entire* memory (--mem=32G), so only
+        # one step fits at a time. Give each step its share explicitly.
+        mem_node = os.environ.get("SLURM_MEM_PER_NODE")
+        mem_cpu  = os.environ.get("SLURM_MEM_PER_CPU")
+        if mem_node:
+            mem_opt = [f"--mem={int(mem_node) // len(trajectories)}M"]
+        elif mem_cpu:
+            mem_opt = [f"--mem-per-cpu={mem_cpu}M"]
+        else:
+            mem_opt = []
         lammps_launch_cmd = (
             ["srun", "--nodes=1", f"--ntasks={n_per_traj}", "--cpus-per-task=1"]
+            + mem_opt
             + shlex.split(lammps)
         )
         print(f"  Splitting {allocated} allocated tasks across {len(trajectories)} "
@@ -404,8 +445,10 @@ def run_parallel_lammps_md(
     procs: list[subprocess.Popen] = []
     md_dirs: list[Path] = []
     log_fhs: list = []
+    if traj_ids is None:
+        traj_ids = list(range(len(trajectories)))
 
-    for i, traj in enumerate(trajectories):
+    for i, traj in zip(traj_ids, trajectories):
         md_dir = iter_dir / f"md_{i:03d}"
         md_dir.mkdir(parents=True, exist_ok=True)
 
@@ -496,7 +539,7 @@ def run_parallel_lammps_md(
     sys.stdout.flush()
 
     # Wait for all trajectories to finish.
-    for i, (proc, fh) in enumerate(zip(procs, log_fhs)):
+    for i, proc, fh in zip(traj_ids, procs, log_fhs):
         rc = proc.wait()
         fh.close()
         if rc != 0:
@@ -510,13 +553,13 @@ def run_parallel_lammps_md(
     # Tag each block with Feature strain 1/0 so step B.5 can strain selectively.
     merged = iter_dir / "preselected.cfg"
     with merged.open("w") as out:
-        for i, md_dir in enumerate(md_dirs):
+        for i, traj, md_dir in zip(traj_ids, trajectories, md_dirs):
             partial = md_dir / "preselected.cfg"
             if partial.exists() and partial.stat().st_size > 0:
                 content = partial.read_text()
-                strain_flag = "1" if trajectories[i].get("strain", False) else "0"
+                strain_flag = "1" if traj.get("strain", False) else "0"
                 content = _tag_cfg(content, "strain", strain_flag)
-                content = _tag_cfg(content, "type", trajectories[i].get("template", "solid"))
+                content = _tag_cfg(content, "type", traj.get("template", "solid"))
                 n = content.count("BEGIN_CFG")
                 out.write(content)
                 print(f"  Trajectory {i:03d}: {n} config(s) added to merged pool (strain={strain_flag}).")
@@ -1211,6 +1254,16 @@ def run_active_learning(
                   f"into training set) — skipping.")
             continue
 
+        # Trajectories whose MD already ran its full length (was never stopped by
+        # grade_break) in an earlier iteration are not run again; the record
+        # lives in al_root/finished_trajectories.yaml so it survives restarts.
+        finished_keys = _load_finished_trajectories(al_root)
+        active = [(i, t) for i, t in enumerate(al_trajs) if _traj_key(t) not in finished_keys]
+        if al_trajs and not active:
+            print("\nActive learning converged: every trajectory has run its full MD length "
+                  f"(see {al_root / 'finished_trajectories.yaml'}).")
+            break
+
         # Step A: LAMMPS MD with MLIP selection enabled (skipped for no_al-only runs)
         preselected = iter_dir / "preselected.cfg"
         if preselected.exists():
@@ -1218,13 +1271,16 @@ def run_active_learning(
         elif al_trajs:
             print("\nStep A — LAMMPS MD with active learning selection...")
             sys.stdout.flush()
-            print(f"  Parallel mode: {len(al_trajs)} AL trajectories.")
+            n_skip = len(al_trajs) - len(active)
+            print(f"  Parallel mode: {len(active)} AL trajectories"
+                  + (f" ({n_skip} skipped: already ran their full MD length)." if n_skip else "."))
             preselected = run_parallel_lammps_md(
-                lammps, al_trajs, iter_dir, al_pot_path,
+                lammps, [t for _, t in active], iter_dir, al_pot_path,
                 grade_threshold, grade_break,
                 default_lat_param=lat_param,
                 default_supercell_size=supercell_size,
                 default_cubic=cubic,
+                traj_ids=[i for i, _ in active],
             )
         elif not trajectories:
             print("\nStep A — LAMMPS MD with active learning selection...")
@@ -1239,6 +1295,15 @@ def run_active_learning(
         else:
             # All trajectories have no_al=True; no LAMMPS needed.
             print("\nStep A — skipping (all trajectories have no_al=True).")
+
+        # Record trajectories whose MD ran its full length this iteration.
+        newly = [t for i, t in active if _md_ran_full_length(iter_dir / f"md_{i:03d}")]
+        if newly:
+            fin_path = al_root / "finished_trajectories.yaml"
+            prev = (yaml.safe_load(fin_path.read_text()) or []) if fin_path.exists() else []
+            _save_finished_trajectories(al_root, prev + newly)
+            print(f"  {len(newly)} trajectory(ies) ran their full MD length and will be skipped "
+                  f"from the next iteration on.")
 
         n_pre = _count_cfg(preselected) if preselected.exists() else 0
         if n_pre == 0 and not no_al_trajs:

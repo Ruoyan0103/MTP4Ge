@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
 from mtp_calculator import MTPCalculator, MTPLammpsCalculator
 from utils import write_bare_cfg
 from energy_volume import DEFAULT_LAMMPS
+import lammps_pair
 
 MLP_DEFAULT = "/scratch/project_2012355/Paper_3/mlip-3-prune/bin/mlp"
 
@@ -253,8 +254,9 @@ def _find_moving_atom(initial, final) -> int:
 def run(pot: str, outdir: Path, a0: float,
         n_images: int, fmax: float, fmax_relax: float, max_steps: int,
         backend: str = "mlp", mlp: str | None = None,
-        lammps_cmd: str = DEFAULT_LAMMPS) -> None:
+        lammps_cmd: str = DEFAULT_LAMMPS, rattle: float = 0.0) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(0)
 
     if backend == "mlp":
         make_calc = lambda: MTPCalculator(mlp=mlp, pot=pot)
@@ -269,6 +271,9 @@ def run(pot: str, outdir: Path, a0: float,
         except RuntimeError as e:
             print(f"  Error building endpoints: {e}")
             continue
+        if rattle > 0:
+            for img in (initial, final):
+                img.positions += rng.normal(0.0, rattle, img.positions.shape)
 
         hop_dist = np.linalg.norm(
             initial.get_positions()[hop_idx] - vac_pos
@@ -381,15 +386,23 @@ def main() -> None:
                         help="Output directory (default: results/tests/<pot's parent dir "
                              "name>/vacancy_migration, e.g. --pot results/potentials/pot_660277/pot.almtp "
                              "-> results/tests/pot_660277/vacancy_migration)")
-    parser.add_argument("--backend", choices=["mlp", "lammps"], default="mlp",
+    parser.add_argument("--rattle", type=float, default=0.0,
+                        help="Gaussian random displacement [Å] of every atom of both endpoints before "
+                             "relaxing (fixed seed; default 0 = none). Needed for SW, whose unrelaxed "
+                             "vacancy has exactly zero forces by symmetry and never relaxes")
+    parser.add_argument("--backend", choices=["mlp", "lammps", "lammps-sw"], default="mlp",
                         help="Evaluation engine: 'mlp' calculate_efs (default) or "
-                             "'lammps' (pair_style mtp+nlh — for potentials 'mlp' can't load)")
+                             "'lammps' (pair_style mtp+nlh — for potentials 'mlp' can't load) or "
+                             "'lammps-sw' (SW + NLH table, --pot = its directory)")
     parser.add_argument("--mlp", default=MLP_DEFAULT,
                         help="mlp binary path (--backend mlp only)")
     parser.add_argument("--lammps", default=DEFAULT_LAMMPS,
                         help="LAMMPS command, e.g. 'srun /path/to/lmp_mpi' "
                              f"(--backend lammps only; default: {DEFAULT_LAMMPS})")
     args = parser.parse_args()
+    if args.backend == "lammps-sw":
+        lammps_pair.check_sw(args.pot)
+        args.backend = "lammps"
 
     if args.outdir is None:
         run_name = Path(args.pot).resolve().parent.name
@@ -408,6 +421,7 @@ def main() -> None:
         backend=args.backend,
         mlp=args.mlp,
         lammps_cmd=args.lammps,
+        rattle=args.rattle,
     )
 
 

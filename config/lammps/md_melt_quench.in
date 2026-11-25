@@ -15,13 +15,20 @@
 #   ${GRADE_THRESHOLD} → γ_select
 #   ${GRADE_BREAK}     → γ_break (set equal to γ_select for selecting one config per trajectory)
 #   ${READ_DATA_LINE}  → read_data line for the pre-built structure at the target density
+#
+# Timestep is 0.5 fs (dense cells, 40-150 GPa). All stage lengths are defined
+# in ps and converted to steps, so changing dt does not change the physical
+# duration of any stage. QUENCH_STEPS from active_learning.py is assumed to be
+# computed for a 1 fs timestep and is rescaled below to keep the requested rate.
 
 #===================== Simulation Parameters =======================
+variable dt          equal 0.0005                          # ps (0.5 fs)
 variable T_run       equal 100
 variable T_melt      equal 1900
-variable EQ_STEPS    equal 5000    # 5 ps
-variable HEAT_STEPS  equal 100000  # 100 ps
-variable MELT_STEPS  equal 10000   # 10 ps
+variable EQ_STEPS    equal round(5.0/${dt})                # 5 ps
+variable HEAT_STEPS  equal round(100.0/${dt})              # 100 ps
+variable MELT_STEPS  equal round(10.0/${dt})               # 10 ps
+variable Q_STEPS     equal round(${QUENCH_STEPS}*0.001/${dt})  # same quench rate as requested
 variable SEED        equal 12345
 
 #===================== System Setup ================================
@@ -42,7 +49,7 @@ pair_coeff  * *
 
 neighbor    2.0 bin
 neigh_modify delay 0 every 1 check yes
-timestep    0.001
+timestep    ${dt}
 
 #===================== Initial Velocity ============================
 velocity    all create ${T_run} ${SEED} mom yes rot yes
@@ -67,7 +74,7 @@ unfix       melt
 
 #===================== Stage 3: quench T_MELT -> T_RUN ==============
 fix         quench all nvt temp ${T_melt} ${T_run} 0.1
-run         ${QUENCH_STEPS}  
+run         ${Q_STEPS}
 unfix       quench
 
 #===================== Stage 4: anneal at T_RUN ======================

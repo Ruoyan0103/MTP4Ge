@@ -26,6 +26,7 @@ from ase.calculators.calculator import Calculator, all_changes
 
 sys.path.insert(0, str(Path(__file__).parent))
 from utils import _mlp_env, write_bare_cfg
+import lammps_pair
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 LAMMPS_TEMPLATE = REPO_ROOT / "config" / "lammps" / "phonon_dispersion_mtp.in"
@@ -135,6 +136,7 @@ class MTPLammpsCalculator(Calculator):
                 .replace("${POT_PATH}", self.pot)
                 .replace("${MASS}", str(GE_MASS))
             )
+            text = lammps_pair.apply(text, self.pot)
             (workdir / "in.lammps").write_text(text)
 
             cmd = shlex.split(self.lammps_cmd) + [

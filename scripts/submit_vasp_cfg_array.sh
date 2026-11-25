@@ -1,14 +1,15 @@
 #!/bin/bash
 #SBATCH --job-name=vasp_cfg
 #SBATCH --account=project_2012355
-#SBATCH --partition=medium
-#SBATCH --time=05:00:00
+#SBATCH --partition=small
+#SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=64
 #SBATCH --cpus-per-task=1
-# No --mem*: 'medium' is node-exclusive, so --mem-per-cpu is multiplied by
-# all 384 cores (2G -> 768G > the ~745G node, "Requested node configuration
-# is not available"); the job already gets the whole node's memory by default.
+#SBATCH --mem-per-cpu=2G
+# 'small', not 'medium': 'medium' is node-exclusive, so each 64-rank task was
+# billed for all 384 cores. 'small' bills only the 64 requested. A 64-atom
+# single point takes ~25-80 min and peaks at ~1.25 GB/rank (AL-1 iter_1/2/5).
 #SBATCH --output=logs/vasp_cfg_%A_%a.out
 #SBATCH --error=logs/vasp_cfg_%A_%a.err
 

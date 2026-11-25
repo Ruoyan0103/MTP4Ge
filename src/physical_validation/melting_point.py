@@ -23,6 +23,45 @@ Heavy test — submit to HPC as a SLURM array (one repeat per array task):
     sbatch scripts/submit_melting_point.sh results/potentials/pot_al.almtp
     # after all array tasks finish, collect Tm across repeats:
     python src/physical_validation/melting_point.py --pot results/potentials/pot_al.almtp --aggregate
+
+Latent heat of melting ΔH_m (two estimates)
+-------------------------------------------
+1. Coexistence enthalpy balance — always computed, free (no extra MD; reads
+   the logs/dumps every repeat already writes). Approach (a)/(c) of the
+   design discussion, made clean as follows. Stage 3 is NpH at P = 0, so the
+   per-atom enthalpy h_coex = <E_tot + PV>/N over the Tm window (last 10 ps)
+   is a mixture  h_coex = f_liq·h_liq(Tm) + (1−f_liq)·h_sol(Tm)  (+ a small
+   interface excess), hence
+        ΔH_m = h_liq − h_sol = (h_coex − h_sol(Tm)) / f_liq.
+   * h_sol(Tm): from Stage 1 — E_min (minimised crystal, T = 0, from the
+     `run 1000` block after box/relax) and <H>(T_solid) (second half of the
+     NPT run). Classical MD gives c_p → 3k_B as T → 0, so
+     h_sol(T) = E_min + 3k_B·T + a·T² with a fixed by the T_solid point
+     (lowest-order anharmonic term), extrapolated from T_solid to Tm.
+   * f_liq: liquid fraction over the last 5 Stage-3 dump frames, from a
+     z-slab profile (bins ≈ 2.9 Å) of the per-atom coordination number
+     within 3.5 Å (diamond 4.0, liquid ≈ 7.5 at ~960 K); each bin's liquid
+     fraction is (CN_bin − 4)/(CN_liq − 4) clipped to [0, 1], CN_liq being
+     the mean of bins above the solid/liquid midpoint, weighted by atom count.
+   Limitations: ~±3–5 % from the c_p extrapolation and f_liq (interfacial
+   bins); the interface excess enthalpy (2 interfaces, ~0.01 eV/atom for a
+   4×4×16 cell) biases ΔH_m slightly high; c_p,liq is not available.
+   Method (c) proper (fraction-solid vs T during NpH) was rejected: f_liq(t)
+   and T(t) move together only over a ~20 K range, too noisy to differentiate.
+2. Direct bulk NPT — optional (`--latent-heat`, extra MD, default off).
+   Approach (b): separate all-crystal (superheated) and all-liquid
+   (melted at --T-melt, then supercooled) NPT runs of a small periodic
+   cell (--lh-cell, default 4 → 512 atoms) at T_L ± dT (T_L = --T-latent or
+   Tm read from tm_summary.txt). ΔH_m(T_L) = mean of h_liq − h_sol at the
+   two temperatures (= linear interpolation to T_L) and
+   c_p(phase) = Δh/(2 dT). The final frame of every production run is
+   checked by CN (crystal < 5, liquid > 5.5), and a first-half/second-half
+   drift in <H> is flagged (crystallisation of the supercooled liquid or
+   melting of the crystal). Results go to <outdir>/latent_heat/latent_heat.txt
+   and are folded into tm_summary.txt by the next `--aggregate` (run
+   automatically after `--latent-heat` when repeat_NN/ dirs exist).
+       python src/physical_validation/melting_point.py --pot POT --latent-heat \\
+           --lammps "srun lmp_mpi" --np 8              # T_L from tm_summary.txt
 """
 
 import argparse
@@ -33,6 +72,9 @@ from pathlib import Path
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
+import lammps_pair
+
 # ---------------------------------------------------------------------------
 # Physical constants
 # ---------------------------------------------------------------------------
@@ -42,6 +84,14 @@ _GE_MASS_AMU = 72.630
 # Expected Tm for sanity check
 # ---------------------------------------------------------------------------
 GE_TM_EXP = 1211.4   # K, experimental melting point of germanium
+# Enthalpy of fusion of Ge, CRC Handbook of Chemistry and Physics
+# ("Enthalpy of Fusion" table): 36.94 kJ/mol.
+GE_DHM_EXP_KJMOL = 36.94
+
+_KB_EV = 8.617333262e-5          # eV/K
+_EV_PER_ATOM_TO_KJMOL = 96.4853321  # 1 eV/atom = 96.485 kJ/mol
+_EV_PER_BAR_A3 = 6.241509074e-7  # 1 bar·Å^3 in eV
+GE_DHM_EXP_EV = GE_DHM_EXP_KJMOL / _EV_PER_ATOM_TO_KJMOL
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +155,7 @@ unfix       npt_eq
 write_restart stage1.restart
 """
     in_path = workdir / "in.stage1"
-    in_path.write_text(lammps_in)
+    in_path.write_text(lammps_pair.apply(lammps_in, pot_path))
     return in_path
 
 
@@ -183,7 +233,7 @@ write_data  final.data
 print       "=== Coexistence run complete ==="
 """
     in_path = workdir / "in.stage23"
-    in_path.write_text(lammps_in)
+    in_path.write_text(lammps_pair.apply(lammps_in, pot_path))
     return in_path
 
 
@@ -224,22 +274,23 @@ def get_zmid_from_log(log_path: Path) -> float:
 # LAMMPS log parser
 # ---------------------------------------------------------------------------
 
-def parse_lammps_log(log_path: Path) -> dict[str, np.ndarray]:
+def parse_lammps_log(log_path: Path, block: int = -1) -> dict[str, np.ndarray]:
     """Parse LAMMPS log file → dict of thermo arrays.
 
     Returns dict with keys: step, time, temp, press, vol, pe, ke, etotal.
-    Each value is a 1D numpy array.
+    Each value is a 1D numpy array. `block` selects which thermo block (one per
+    `run`/`minimize`) to parse; default -1 = the last one.
     """
     text = log_path.read_text()
 
-    # Find the last "Step" header line (there may be multiple runs)
+    # Find the "Step" header lines (there may be multiple runs)
     lines = text.splitlines()
-    header_idx = None
-    for i in range(len(lines) - 1, -1, -1):
-        stripped = lines[i].strip()
-        if stripped.startswith("Step ") and "Temp" in stripped:
-            header_idx = i
-            break
+    headers = [i for i, l in enumerate(lines)
+               if l.strip().startswith("Step ") and "Temp" in l]
+    try:
+        header_idx = headers[block]
+    except IndexError:
+        header_idx = None
 
     if header_idx is None:
         raise RuntimeError(f"No thermo header found in {log_path}")
@@ -363,6 +414,295 @@ def extract_tm_from_log(log_path: Path, last_ps: float = 10.0) -> tuple[float, n
 
 
 # ---------------------------------------------------------------------------
+# Latent heat of melting (see module docstring)
+# ---------------------------------------------------------------------------
+
+def _enthalpy(thermo: dict[str, np.ndarray]) -> np.ndarray:
+    """Total enthalpy E_tot + P·V (eV) per thermo line."""
+    return thermo["etotal"] + thermo["press"] * thermo["vol"] * _EV_PER_BAR_A3
+
+
+def _read_dump_frames(dump_path: Path, last_n: int) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Last `last_n` frames of an orthogonal-box `id type x y z` dump → [(L, wrapped xyz)]."""
+    blocks = dump_path.read_text().split("ITEM: TIMESTEP")[1:]
+    frames = []
+    for b in blocks[-last_n:]:
+        lines = b.splitlines()
+        n = int(lines[3])
+        lo, hi = [], []
+        for k in range(5, 8):
+            a, c = map(float, lines[k].split()[:2])
+            lo.append(a)
+            hi.append(c)
+        lo, hi = np.array(lo), np.array(hi)
+        xyz = np.array([l.split()[2:5] for l in lines[9:9 + n]], dtype=float)
+        L = hi - lo
+        frames.append((L, (xyz - lo) % L))
+    return frames
+
+
+def _per_atom_cn(L: np.ndarray, xyz: np.ndarray, r_cut: float = 3.5) -> np.ndarray:
+    from scipy.spatial import cKDTree
+    tree = cKDTree(xyz, boxsize=L)
+    return np.array([len(nb) - 1 for nb in tree.query_ball_point(xyz, r_cut)])
+
+
+def liquid_fraction_from_dump(
+    dump_path: Path, n_frames: int = 5, r_cut: float = 3.5, bin_width: float = 2.9,
+) -> tuple[float, float]:
+    """Liquid fraction of a z-layered solid/liquid slab (mean, std over frames).
+
+    Per z-bin mean CN(r < r_cut) is mapped linearly from the diamond value 4
+    (→ 0) to the bulk-liquid plateau CN_liq (→ 1); CN_liq = mean of bins above
+    the midpoint between 4 and the highest bin. Bins are weighted by atom count.
+    """
+    fracs = []
+    for L, xyz in _read_dump_frames(dump_path, n_frames):
+        cn = _per_atom_cn(L, xyz, r_cut)
+        nb = max(int(L[2] / bin_width), 2)
+        b = np.minimum((xyz[:, 2] / L[2] * nb).astype(int), nb - 1)
+        counts = np.bincount(b, minlength=nb)
+        prof = np.bincount(b, weights=cn, minlength=nb) / np.maximum(counts, 1)
+        cn_sol = 4.0
+        mid = 0.5 * (cn_sol + prof.max())
+        liq_bins = prof[prof > mid]
+        if prof.max() - cn_sol < 1.5 or len(liq_bins) == 0:
+            fracs.append(0.0)          # no liquid plateau: all crystal
+            continue
+        cn_liq = float(liq_bins.mean())
+        phi = np.clip((prof - cn_sol) / (cn_liq - cn_sol), 0.0, 1.0)
+        fracs.append(float((phi * counts).sum() / counts.sum()))
+    return float(np.mean(fracs)), float(np.std(fracs))
+
+
+def crystal_enthalpy_model(stage1_log: Path, n_atoms: int) -> dict:
+    """h_sol(T) = E_min + 3k_B T + a T² per atom, fitted to Stage 1.
+
+    E_min: the T = 0 block (after minimise + box/relax) preceding the NPT run;
+    <h>(T_solid): second half of the final (NPT) block. Classical c_p → 3k_B
+    at T → 0, so one finite-T point fixes the anharmonic coefficient a.
+    """
+    n_blocks = sum(1 for l in stage1_log.read_text().splitlines()
+                   if l.strip().startswith("Step ") and "Temp" in l)
+    npt = parse_lammps_log(stage1_log, block=-1)
+    e_min = None
+    for blk in range(n_blocks - 2, -1, -1):
+        th = parse_lammps_log(stage1_log, block=blk)
+        if np.all(th["temp"] < 1e-6):
+            e_min = float(th["pe"][-1])
+            break
+    if e_min is None:
+        raise RuntimeError(f"No T = 0 (minimised) block in {stage1_log}")
+    half = len(npt["temp"]) // 2
+    t_s = float(np.mean(npt["temp"][half:]))
+    h_s = float(np.mean(_enthalpy(npt)[half:])) / n_atoms
+    e0 = e_min / n_atoms
+    a = (h_s - e0 - 3 * _KB_EV * t_s) / t_s**2
+    return {"e_min": e0, "T_solid": t_s, "h_solid": h_s, "a": a}
+
+
+def latent_heat_from_coexistence(workdir: Path, last_ps: float = 10.0) -> dict:
+    """ΔH_m from a finished repeat (Stage-3 enthalpy balance; see module docstring).
+
+    The atom count is read from the Stage-3 dump, so it does not depend on the
+    --nx/--ny/--nz passed to --aggregate.
+    """
+    dump = workdir / "stage3_coexist.lammpstrj"
+    n_atoms = len(_read_dump_frames(dump, 1)[0][1])
+    th = parse_lammps_log(workdir / "stage23.log")
+    mask = th["time"] >= th["time"][-1] - last_ps
+    tm = float(np.mean(th["temp"][mask]))
+    h_coex = float(np.mean(_enthalpy(th)[mask])) / n_atoms
+    model = crystal_enthalpy_model(workdir / "stage1.log", n_atoms)
+    h_sol = model["e_min"] + 3 * _KB_EV * tm + model["a"] * tm**2
+    cp_sol = 3 * _KB_EV + 2 * model["a"] * tm
+    n_frames = max(1, int(round(last_ps / 2.0)))   # dumps every 1000 steps = 2 ps
+    f_liq, f_liq_std = liquid_fraction_from_dump(dump, n_frames)
+    if f_liq < 0.05:
+        raise RuntimeError(f"liquid fraction {f_liq:.2f} too small (no coexistence)")
+    dhm = (h_coex - h_sol) / f_liq
+    return {"dhm": dhm, "f_liq": f_liq, "f_liq_std": f_liq_std, "h_coex": h_coex,
+            "h_sol_tm": h_sol, "cp_sol_kB": cp_sol / _KB_EV}
+
+
+# --- Direct method (b): bulk crystal and liquid NPT ------------------------
+
+def write_latent_heat_input(
+    workdir: Path, pot_path: str, phase: str, n_cell: int, a0: float,
+    temps: list[float], T_melt: float, steps_melt: int, steps_eq: int,
+    steps_prod: int, seed: int, thermo_every: int = 50,
+) -> Path:
+    """LAMMPS input for one phase ('crystal' | 'liquid') of the direct ΔH_m method.
+
+    Each production run is logged to lh_<phase>_T<T>.log and its last frame
+    written to lh_<phase>_T<T>.lammpstrj (for the CN phase check).
+    """
+    T0 = temps[0] if phase == "crystal" else T_melt
+    melt = "" if phase == "crystal" else f"""
+# Melt at {T_melt} K
+fix         ens all npt temp {T_melt} {T_melt} $(100.0*dt) iso 0.0 0.0 $(1000.0*dt)
+run         {steps_melt}
+unfix       ens
+"""
+    segs = []
+    for T in temps:
+        tag = f"lh_{phase}_T{T:.0f}"
+        segs.append(f"""
+# {phase} at {T:.1f} K: equilibrate, then production
+fix         ens all npt temp {T} {T} $(100.0*dt) iso 0.0 0.0 $(1000.0*dt)
+run         {steps_eq}
+log         {tag}.log
+run         {steps_prod}
+write_dump  all custom {tag}.lammpstrj id type x y z modify sort id
+log         lh_{phase}.log append
+unfix       ens
+""")
+    text = f"""# Latent heat (direct method): bulk {phase}, {n_cell}^3 diamond cells
+units       metal
+boundary    p p p
+atom_style  atomic
+
+lattice     diamond {a0}
+region      box block 0 {n_cell} 0 {n_cell} 0 {n_cell} units lattice
+create_box  1 box
+create_atoms 1 box
+mass        1 {_GE_MASS_AMU}
+
+pair_style  hybrid/overlay mtp nlh
+pair_coeff  * * mtp {pot_path} 0
+pair_coeff  1 1 nlh 32 32 0.05121 0.50355 0.44524 49.82156 12.56998 4.13684 1.28 2.0
+
+neighbor    2.0 bin
+neigh_modify delay 0 every 1 check yes
+timestep    0.002
+thermo      {thermo_every}
+thermo_style custom step temp press vol pe ke etotal
+
+velocity    all create {T0} {seed} mom yes rot yes
+{melt}{''.join(segs)}
+print       "=== Latent heat {phase} done ==="
+"""
+    in_path = workdir / f"in.lh_{phase}"
+    in_path.write_text(lammps_pair.apply(text, pot_path))
+    return in_path
+
+
+def _block_sem(x: np.ndarray, n_blocks: int = 5) -> float:
+    blocks = np.array_split(x, n_blocks)
+    means = np.array([b.mean() for b in blocks if len(b)])
+    return float(np.std(means, ddof=1) / np.sqrt(len(means))) if len(means) > 1 else 0.0
+
+
+def analyse_latent_heat_runs(workdir: Path, temps: list[float], n_atoms: int) -> dict:
+    """Parse lh_<phase>_T<T>.log → per-phase <h>, SEM, drift, CN; ΔH_m(T_L), c_p."""
+    res: dict = {"temps": temps, "phases": {}}
+    for phase in ("crystal", "liquid"):
+        rows = []
+        for T in temps:
+            tag = f"lh_{phase}_T{T:.0f}"
+            th = parse_lammps_log(workdir / f"{tag}.log")
+            h = _enthalpy(th) / n_atoms
+            half = len(h) // 2
+            frame = _read_dump_frames(workdir / f"{tag}.lammpstrj", 1)[0]
+            rows.append({
+                "T_set": T, "T": float(np.mean(th["temp"])), "h": float(np.mean(h)),
+                "sem": _block_sem(h), "drift": float(np.mean(h[half:]) - np.mean(h[:half])),
+                "cn": float(np.mean(_per_atom_cn(*frame))),
+            })
+        res["phases"][phase] = rows
+    xs, ls = res["phases"]["crystal"], res["phases"]["liquid"]
+    dh = [l["h"] - x["h"] for x, l in zip(xs, ls)]
+    res["dhm"] = float(np.mean(dh))
+    res["dhm_err"] = float(np.sqrt(sum(x["sem"]**2 + l["sem"]**2 for x, l in zip(xs, ls))) / len(dh))
+    res["T_L"] = float(np.mean(temps))
+    if len(temps) > 1:
+        for phase in ("crystal", "liquid"):
+            r = res["phases"][phase]
+            res[f"cp_{phase}_kB"] = (r[-1]["h"] - r[0]["h"]) / (r[-1]["T"] - r[0]["T"]) / _KB_EV
+    warn = []
+    for x in xs:
+        if x["cn"] > 5.0:
+            warn.append(f"crystal at {x['T_set']:.0f} K melted (CN {x['cn']:.1f})")
+    for l in ls:
+        if l["cn"] < 5.5:
+            warn.append(f"liquid at {l['T_set']:.0f} K crystallised/amorphised (CN {l['cn']:.1f})")
+    for phase, rows in res["phases"].items():
+        for r in rows:
+            if abs(r["drift"]) > max(5 * r["sem"], 0.005):
+                warn.append(f"{phase} at {r['T_set']:.0f} K: <h> drift {r['drift']*1e3:+.1f} meV/atom")
+    res["warnings"] = warn
+    return res
+
+
+def write_latent_heat_txt(res: dict, path: Path, pot: str | None, n_atoms: int) -> None:
+    with open(path, "w") as f:
+        f.write("# Latent heat of melting: direct bulk crystal / liquid NPT (P = 0)\n")
+        f.write(f"# Potential: {pot if pot else 'unknown'}\n")
+        f.write(f"# Cell: {n_atoms} atoms\n")
+        f.write(f"# T_L = {res['T_L']:.2f} K\n")
+        f.write(f"# dHm_direct = {res['dhm']:.5f} +- {res['dhm_err']:.5f} eV/atom "
+                f"= {res['dhm']*_EV_PER_ATOM_TO_KJMOL:.3f} +- "
+                f"{res['dhm_err']*_EV_PER_ATOM_TO_KJMOL:.3f} kJ/mol\n")
+        for phase in ("crystal", "liquid"):
+            if f"cp_{phase}_kB" in res:
+                f.write(f"# cp_{phase} = {res[f'cp_{phase}_kB']:.3f} kB/atom\n")
+        f.write(f"# Exp. dHm (Ge) = {GE_DHM_EXP_KJMOL} kJ/mol (CRC Handbook)\n")
+        for w in res["warnings"]:
+            f.write(f"# WARNING: {w}\n")
+        f.write("#\n# phase    T_set   <T>(K)   <h>(eV/atom)   SEM(eV)   drift(eV)   CN(3.5A)\n")
+        for phase in ("crystal", "liquid"):
+            for r in res["phases"][phase]:
+                f.write(f"  {phase:8s} {r['T_set']:7.1f} {r['T']:8.2f} {r['h']:14.6f} "
+                        f"{r['sem']:9.6f} {r['drift']:+10.6f} {r['cn']:8.2f}\n")
+
+
+def read_latent_heat_txt(path: Path) -> dict | None:
+    """Read back dHm_direct / T_L / cp lines written by write_latent_heat_txt."""
+    import re
+    if not path.exists():
+        return None
+    text = path.read_text()
+    m = re.search(r"dHm_direct = ([-\d.]+) \+- ([\d.]+) eV/atom", text)
+    t = re.search(r"T_L = ([\d.]+) K", text)
+    if not m or not t:
+        return None
+    out = {"dhm": float(m.group(1)), "dhm_err": float(m.group(2)), "T_L": float(t.group(1)),
+           "warnings": re.findall(r"# WARNING: (.*)", text)}
+    for phase in ("crystal", "liquid"):
+        c = re.search(rf"cp_{phase} = ([-\d.]+) kB", text)
+        if c:
+            out[f"cp_{phase}_kB"] = float(c.group(1))
+    return out
+
+
+def run_latent_heat(
+    lammps: str, np_cores: int, pot_abs: str, workdir: Path, T_L: float, dT: float,
+    n_cell: int, a0: float, T_melt: float, steps_melt: int, steps_eq: int,
+    steps_prod: int, seed: int, pot: str | None,
+) -> dict:
+    """Run the direct ΔH_m method (crystal and liquid NPT at T_L ± dT)."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    n_atoms = 8 * n_cell**3
+    temps = [T_L - dT, T_L + dT] if dT > 0 else [T_L]
+    print(f"=== Latent heat (direct): {n_atoms} atoms, T = {temps} K ===")
+    # crystal: heat upward (lowest T first); liquid: cool downward from the melt
+    for phase, ts in (("crystal", temps), ("liquid", temps[::-1])):
+        write_latent_heat_input(workdir, pot_abs, phase, n_cell, a0, ts, T_melt,
+                                steps_melt, steps_eq, steps_prod, seed)
+        el = _run_lammps(lammps, np_cores, workdir, f"in.lh_{phase}", f"lh_{phase}.log", seed)
+        print(f"    {phase} finished in {el:.1f}s")
+    res = analyse_latent_heat_runs(workdir, temps, n_atoms)
+    out = workdir / "latent_heat.txt"
+    write_latent_heat_txt(res, out, pot, n_atoms)
+    print(f"  dH_m(T_L = {res['T_L']:.1f} K) = {res['dhm']:.4f} +- {res['dhm_err']:.4f} eV/atom "
+          f"= {res['dhm']*_EV_PER_ATOM_TO_KJMOL:.2f} kJ/mol  (exp {GE_DHM_EXP_KJMOL} kJ/mol)")
+    for w in res["warnings"]:
+        print(f"  WARNING: {w}")
+    print(f"  Written to {out}")
+    return res
+
+
+# ---------------------------------------------------------------------------
 # Plotting
 # ---------------------------------------------------------------------------
 
@@ -480,8 +820,15 @@ def collect_repeat_result(
                   f"CN_lower = {cn_lower:.1f} (solid)")
 
     tm, temps, times = extract_tm_from_log(workdir / "stage23.log")
-    return {"seed": seed, "tm": tm, "temps": temps, "times": times,
-            "melted": melted, "cn_upper": cn_upper, "cn_lower": cn_lower}
+    out = {"seed": seed, "tm": tm, "temps": temps, "times": times,
+           "melted": melted, "cn_upper": cn_upper, "cn_lower": cn_lower}
+    # Latent heat from the coexistence enthalpy balance (no extra MD).
+    try:
+        lh = latent_heat_from_coexistence(workdir)
+        out.update({"dhm": lh["dhm"], "f_liq": lh["f_liq"], "cp_sol_kB": lh["cp_sol_kB"]})
+    except Exception as e:
+        print(f"    Latent-heat estimate skipped ({e})")
+    return out
 
 
 def run_single_repeat(
@@ -539,7 +886,12 @@ def run_single_repeat(
 # ---------------------------------------------------------------------------
 
 def _summarize(all_results: list[dict], outdir: Path, pot: str | None, nx: int, ny: int, nz: int) -> None:
-    """Aggregate Tm across repeats: print stats and write tm_summary.txt."""
+    """Aggregate Tm (and ΔH_m) across repeats: print stats and write tm_summary.txt.
+
+    The Tm lines are written first and unchanged in format (downstream parsers,
+    e.g. results/tests/pot_1023/make_summary.py, take the first `Tm = X` and
+    `+- Y` in the file); the latent-heat lines follow them.
+    """
     n_atoms = 8 * nx * ny * nz
 
     if not all_results:
@@ -558,7 +910,37 @@ def _summarize(all_results: list[dict], outdir: Path, pot: str | None, nx: int, 
     print(f"  Exp. Tm (Ge) = {GE_TM_EXP} K")
     print(f"  dT = {mean_tm - GE_TM_EXP:+.2f} K  "
           f"({(mean_tm - GE_TM_EXP) / GE_TM_EXP * 100:+.2f}%)")
-    print(f"{'='*60}")
+    lh = [r for r in all_results if "dhm" in r]
+    lh_lines: list[str] = []
+    if lh:
+        dh = np.array([r["dhm"] for r in lh])
+        dh_mean = float(dh.mean())
+        dh_std = float(dh.std(ddof=1)) if len(dh) > 1 else 0.0
+        f_mean = float(np.mean([r["f_liq"] for r in lh]))
+        cp_mean = float(np.mean([r["cp_sol_kB"] for r in lh]))
+        lh_lines += [
+            f"dHm (coexistence) = {dh_mean:.4f} +- {dh_std:.4f} eV/atom "
+            f"= {dh_mean*_EV_PER_ATOM_TO_KJMOL:.2f} +- {dh_std*_EV_PER_ATOM_TO_KJMOL:.2f} "
+            f"kJ/mol (s, n={len(dh)})",
+            f"  liquid fraction (end of NpH) = {f_mean:.3f}; "
+            f"cp_crystal(Tm) est. = {cp_mean:.2f} kB/atom",
+        ]
+    direct = read_latent_heat_txt(outdir / "latent_heat" / "latent_heat.txt")
+    if direct is not None:
+        cps = "; ".join(f"cp_{p} = {direct[f'cp_{p}_kB']:.2f} kB/atom"
+                        for p in ("crystal", "liquid") if f"cp_{p}_kB" in direct)
+        lh_lines.append(
+            f"dHm (direct NPT, T_L = {direct['T_L']:.1f} K) = {direct['dhm']:.4f} +- "
+            f"{direct['dhm_err']:.4f} eV/atom = {direct['dhm']*_EV_PER_ATOM_TO_KJMOL:.2f} +- "
+            f"{direct['dhm_err']*_EV_PER_ATOM_TO_KJMOL:.2f} kJ/mol (SEM)"
+            + (f"; {cps}" if cps else ""))
+        lh_lines += [f"  WARNING (direct): {w}" for w in direct["warnings"]]
+    if lh_lines:
+        lh_lines.append(f"Exp. dHm (Ge) = {GE_DHM_EXP_KJMOL} kJ/mol = "
+                        f"{GE_DHM_EXP_EV:.4f} eV/atom (CRC Handbook)")
+        for l in lh_lines:
+            print(f"  {l}")
+        print(f"{'='*60}")
 
     summary_path = outdir / "tm_summary.txt"
     with open(summary_path, "w") as f:
@@ -570,10 +952,17 @@ def _summarize(all_results: list[dict], outdir: Path, pot: str | None, nx: int, 
         f.write(f"# SEM = {sem_tm:.4f} K\n")
         f.write(f"# Exp. Tm (Ge) = {GE_TM_EXP} K\n")
         f.write(f"# dT = {mean_tm - GE_TM_EXP:+.4f} K\n")
+        for l in lh_lines:
+            f.write(f"# {l}\n")
         f.write(f"#\n")
-        f.write(f"# seed  Tm (K)\n")
+        if lh:
+            f.write(f"# seed  Tm (K)  dHm (eV/atom)  f_liq\n")
+        else:
+            f.write(f"# seed  Tm (K)\n")
         for r in all_results:
-            f.write(f"  {r['seed']:6d}  {r['tm']:10.4f}\n")
+            extra = (f"  {r['dhm']:13.5f}  {r['f_liq']:5.3f}" if "dhm" in r
+                     else ("  " + "nan".rjust(13) + "    nan" if lh else ""))
+            f.write(f"  {r['seed']:6d}  {r['tm']:10.4f}{extra}\n")
     print(f"  Summary written to {summary_path}")
 
     #plot_results(all_results, outdir)
@@ -630,8 +1019,36 @@ def run(
     verify_melting_cn: bool = True,
     repeat_index: int | None = None,
     aggregate: bool = False,
+    latent_heat: bool = False,
+    T_latent: float | None = None,
+    lh_dT: float = 50.0,
+    lh_cell: int = 4,
+    lh_steps_melt: int = 10_000,
+    lh_steps_eq: int = 5_000,
+    lh_steps_prod: int = 15_000,
 ) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
+
+    if latent_heat:
+        if T_latent is None:
+            import re
+            summ = outdir / "tm_summary.txt"
+            m = re.search(r"Tm = ([\d.]+)", summ.read_text()) if summ.exists() else None
+            if m is None:
+                print(f"  Error: --latent-heat needs --T-latent or an existing {summ} "
+                      f"(run --aggregate first)", file=sys.stderr)
+                sys.exit(1)
+            T_latent = float(m.group(1))
+        run_latent_heat(
+            lammps=lammps, np_cores=np_cores, pot_abs=str(Path(pot).resolve()),
+            workdir=outdir / "latent_heat", T_L=T_latent, dT=lh_dT, n_cell=lh_cell,
+            a0=a0, T_melt=T_melt, steps_melt=lh_steps_melt, steps_eq=lh_steps_eq,
+            steps_prod=lh_steps_prod, seed=seed_start, pot=pot,
+        )
+        if any((outdir / f"repeat_{i:02d}" / "stage23.log").exists() for i in range(n_repeats)):
+            print(f"\n=== Re-aggregating {outdir} to fold the direct ΔH_m into tm_summary.txt ===")
+            _aggregate(outdir, pot, n_repeats, seed_start, nx, ny, nz, verify_melting_cn)
+        return
 
     if aggregate:
         print(f"=== Melting Point: aggregating {n_repeats} repeats from {outdir} ===")
@@ -759,6 +1176,9 @@ def main() -> None:
                         help="LAMMPS binary (default: lmp_mpi)")
     parser.add_argument("--np", type=int, default=1,
                         help="MPI processes per repeat (default: 1)")
+    parser.add_argument("--backend", choices=["lammps", "lammps-sw"], default="lammps",
+                        help="'lammps' (default): pair_style mtp+nlh. 'lammps-sw': SW + NLH table, "
+                             "--pot = its directory (src/utils/lammps_pair.py)")
 
     parser.add_argument("--a0", type=float, default=5.7567,
                         help="Diamond lattice constant in A (default: 5.7567, MTP eq.)")
@@ -773,10 +1193,35 @@ def main() -> None:
     parser.add_argument("--no-verify-melting", action="store_true",
                         help="Skip CN check after Stage 2")
 
+    lh = parser.add_argument_group(
+        "latent heat (direct bulk NPT method; the coexistence estimate needs no flags)")
+    lh.add_argument("--latent-heat", action="store_true",
+                    help="Skip the coexistence runs; run bulk crystal + liquid NPT at "
+                         "T_L +- --lh-dT in <outdir>/latent_heat/ and fold dH_m, cp into "
+                         "tm_summary.txt (re-aggregates existing repeat_NN/). Extra MD.")
+    lh.add_argument("--T-latent", type=float, default=None,
+                    help="T_L (K) for --latent-heat (default: Tm from <outdir>/tm_summary.txt)")
+    lh.add_argument("--lh-dT", type=float, default=50.0,
+                    help="Run at T_L-dT and T_L+dT; dH_m(T_L) is their mean, cp the slope "
+                         "(default 50 K; 0 = single run at T_L, no cp)")
+    lh.add_argument("--lh-cell", type=int, default=4,
+                    help="Cubic diamond supercell n (8n^3 atoms; default 4 = 512)")
+    lh.add_argument("--lh-steps-melt", type=int, default=10_000,
+                    help="Liquid melt steps at --T-melt (default 10000 = 20 ps)")
+    lh.add_argument("--lh-steps-eq", type=int, default=5_000,
+                    help="Equilibration steps per T (default 5000 = 10 ps)")
+    lh.add_argument("--lh-steps-prod", type=int, default=15_000,
+                    help="Production steps per T (default 15000 = 30 ps)")
+
     args = parser.parse_args()
 
     if not args.aggregate and args.pot is None:
         parser.error("--pot is required unless --aggregate is set")
+    if args.backend == "lammps-sw":
+        lammps_pair.check_sw(args.pot)
+    if args.latent_heat and args.aggregate:
+        parser.error("--latent-heat and --aggregate are separate modes (--latent-heat "
+                     "re-aggregates by itself)")
 
     if args.quick:
         print("=== Quick mode ===")
@@ -819,6 +1264,13 @@ def main() -> None:
         verify_melting_cn=not args.no_verify_melting,
         repeat_index=args.repeat_index,
         aggregate=args.aggregate,
+        latent_heat=args.latent_heat,
+        T_latent=args.T_latent,
+        lh_dT=args.lh_dT,
+        lh_cell=args.lh_cell,
+        lh_steps_melt=args.lh_steps_melt,
+        lh_steps_eq=args.lh_steps_eq,
+        lh_steps_prod=args.lh_steps_prod,
     )
 
 
